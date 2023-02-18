@@ -1,0 +1,105 @@
+COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/"
+          | "//" ~ (!"\n" ~ ANY)* ~ ("\n" | EOI) }
+WHITESPACE = _{ (" " | "\r" | "\n")+ }
+tokens = _{ SOI ~ token* ~ EOI }
+stmts = _{ SOI ~ stmt* ~ EOI }
+
+// statements
+stmt              = _{ if_stmt
+                     | repeat_stmt
+                     | while_stmt
+                     | for_stmt
+                     | with_stmt
+                     | return_stmt
+                     | exit_stmt
+                     | block_stmt
+                     | assign_stmt
+                     | expr_stmt
+                     | empty_stmt }
+  if_stmt         = { "if" ~ expr ~ stmt ~ ("else" ~ stmt)? }
+  repeat_stmt     = { "repeat" ~ expr ~ stmt }
+  while_stmt      = { "while" ~ expr ~ stmt }
+  for_stmt        = { "for" ~ "(" ~ assign_expr ~ ";" ~
+                      expr ~ ";" ~ (assign_expr | expr) ~ ")" ~ stmt }
+  with_stmt       = { "with" ~ expr ~ stmt }
+  return_stmt     = { "return" ~ expr ~ ";"? }
+  exit_stmt       = { "exit" ~ ";"? }
+  block_stmt      = { "{" ~ stmt* ~ "}" }
+  assign_stmt     = { assign_expr ~ ";"? }
+  expr_stmt       = { expr ~ ";"? }
+  empty_stmt      = { ";" }
+
+assign_expr       = { assign_lhs ~ assign_op ~ expr }
+  assign_lhs      = { (var | assign_id) ~ (member | index)* }
+    assign_id     = { "(" ~ expr ~ ")" }
+  assign_op       = _{ assign | add_assign | sub_assign | mul_assign | div_assign }
+    assign        = { "=" }
+    add_assign    = { "+=" }
+    sub_assign    = { "-=" }
+    mul_assign    = { "*=" }
+    div_assign    = { "/=" }
+
+// exprs (uses PrattParser)
+expr          = { prefix* ~ primary ~ postfix* ~ (infix ~ prefix* ~ primary ~ postfix*)* }
+  prefix      = _{ not | pos | neg | bit_not | pre_incr | pre_decr }
+    not       = { "!" }
+    pos       = { "+" }
+    neg       = { "-" }
+    bit_not   = { "~" }
+    pre_incr  = { "++" }
+    pre_decr  = { "--" }
+  infix       = _{ and | or | xor
+                 | bit_and | bit_or | bit_xor
+                 | le | lt | ge | gt | ne | eq
+                 | add | sub | mul | div | idiv | imod }
+    and       = { "&&" | "and" }
+    or        = { "||" | "or" }
+    xor       = { "^^" }
+    bit_and   = { "&" }
+    bit_or    = { "|" }
+    bit_xor   = { "^" }
+    le        = { "<=" }
+    lt        = { "<" }
+    ge        = { ">=" }
+    gt        = { ">" }
+    ne        = { "!=" }
+    eq        = { "==" | "=" }
+    add       = { "+" }
+    sub       = { "-" }
+    mul       = { "*" }
+    div       = { "/" }
+    idiv      = { "div" }
+    imod      = { "%" | "mod" }
+  postfix     = _{ member | index | post_incr | post_decr }
+    member    = { "." ~ id }
+    index     = { "[" ~ expr_list ~ "]" }
+    post_incr = { "++" }
+    post_decr = { "--" }
+primary = _{ "(" ~ expr ~ ")" | call_expr | var | float | int | str }
+
+var = { global? ~ id }
+
+call_expr = { id ~ "(" ~ expr_list? ~ ")" }
+expr_list = _{ expr ~ ("," ~ expr)* }
+
+global = { "global" ~ "." }
+
+// tokens
+token = { keyword | id | float | int | str | op }
+keyword = @{ ("if" | "else" | "for" | "repeat" | "with" | "global"
+             | "do" | "until" | "switch" | "break" | "continue" | "exit"
+             | "begin" | "end"
+             | "try" | "catch" | "finally" | "throw" | "new" | "delete"
+             | "and" | "or" | "div" | "mod" | "return")
+           ~ !ASCII_ALPHANUMERIC
+           }
+op = { "&&" | "&" | "||" | "|" | "^^" | "^"
+     | "<=" | "<<" | "<" | ">=" | ">>" | ">"
+     | "++" | "+" | "--" | "-" | "*" | "/"
+     | "==" | "=" | "!=" | "!"
+     | ";" | "." | ","
+     | "(" | ")" | "{" | "}" | "[" | "]" }
+id = @{ !keyword ~ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+float = @{ ASCII_DIGIT* ~ "." ~ ASCII_DIGIT+ }
+int = @{ ASCII_DIGIT+ }
+str = @{ "\"" ~ (!"\"" ~ ANY | "\\\"")* ~ "\"" }
