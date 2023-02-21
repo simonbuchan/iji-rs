@@ -3,6 +3,8 @@ use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest::Parser as _;
 use pest_derive::Parser;
 
+use super::String;
+
 #[derive(Parser)]
 #[grammar = "gml.pest"]
 struct G;
@@ -15,9 +17,6 @@ pub trait Visitor {
     fn assign(&mut self, value: &Assign) -> bool {
         true
     }
-    fn assign_lhs(&mut self, value: &AssignLhs) -> bool {
-        true
-    }
     fn expr(&mut self, value: &Expr) -> bool {
         true
     }
@@ -25,11 +24,11 @@ pub trait Visitor {
 }
 
 #[derive(Debug)]
-pub struct File {
+pub struct Script {
     pub stmts: Vec<Box<Stmt>>,
 }
 
-impl File {
+impl Script {
     pub fn visit<V: Visitor>(&self, visitor: &mut V) {
         for stmt in &self.stmts {
             stmt.visit(visitor);
@@ -50,7 +49,7 @@ pub fn tokenize(input: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn parse(input: &str) -> anyhow::Result<File> {
+pub fn parse(input: &str) -> anyhow::Result<Script> {
     let pairs = G::parse(Rule::stmts, input)?;
     let mut stmts = vec![];
     for pair in pairs {
@@ -59,7 +58,7 @@ pub fn parse(input: &str) -> anyhow::Result<File> {
         }
         stmts.push(parse_stmt(pair));
     }
-    Ok(File { stmts })
+    Ok(Script { stmts })
 }
 
 pub fn dump_parse(input: &str) -> anyhow::Result<()> {
@@ -90,6 +89,7 @@ fn dump_tree(indent: usize, pairs: Pairs<'_, Rule>) {
 #[derive(Debug)]
 pub enum Stmt {
     Expr(Box<Expr>),
+    Var(String),
     Assign(Assign),
     If {
         cond: Box<Expr>,
@@ -133,6 +133,7 @@ impl Stmt {
             Self::Expr(expr) => {
                 expr.visit(visitor);
             }
+            Self::Var(_) => {}
             Self::Assign(assign) => {
                 assign.visit(visitor);
             }
@@ -235,6 +236,11 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
             let stmts = inner.map(parse_stmt).collect();
             Box::new(Stmt::Block { stmts })
         }
+        Rule::var_stmt => {
+            let mut inner = pair.into_inner();
+            let id = inner.next().unwrap().as_str().into();
+            Box::new(Stmt::Var(id))
+        }
         Rule::assign_stmt => {
             let mut inner = pair.into_inner();
             let assign = parse_assign(inner.next().unwrap());
@@ -252,7 +258,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
 
 #[derive(Debug)]
 pub struct Assign {
-    pub lhs: Box<AssignLhs>,
+    pub lhs: Box<Expr>,
     pub op: AssignOp,
     pub rhs: Box<Expr>,
 }
@@ -266,45 +272,45 @@ impl Assign {
         self.rhs.visit(visitor);
     }
 }
-
-#[derive(Debug)]
-pub enum AssignLhs {
-    Var(Var),
-    Id(Box<Expr>),
-    Member {
-        lhs: Box<AssignLhs>,
-        id: String,
-    },
-    Index {
-        lhs: Box<AssignLhs>,
-        indices: Vec<Box<Expr>>,
-    },
-}
-
-impl AssignLhs {
-    pub fn visit<V: Visitor>(&self, visitor: &mut V) {
-        if !visitor.assign_lhs(self) {
-            return;
-        }
-        match self {
-            Self::Var(var) => {
-                visitor.var(var);
-            }
-            Self::Id(expr) => {
-                expr.visit(visitor);
-            }
-            Self::Member { lhs, .. } => {
-                lhs.visit(visitor);
-            }
-            Self::Index { lhs, indices } => {
-                lhs.visit(visitor);
-                for index in indices {
-                    index.visit(visitor);
-                }
-            }
-        }
-    }
-}
+//
+// #[derive(Debug)]
+// pub enum AssignLhs {
+//     Var(Var),
+//     Id(Box<Expr>),
+//     Member {
+//         lhs: Box<AssignLhs>,
+//         name: String,
+//     },
+//     Index {
+//         lhs: Box<AssignLhs>,
+//         indices: Vec<Box<Expr>>,
+//     },
+// }
+//
+// impl AssignLhs {
+//     pub fn visit<V: Visitor>(&self, visitor: &mut V) {
+//         if !visitor.assign_lhs(self) {
+//             return;
+//         }
+//         match self {
+//             Self::Var(var) => {
+//                 visitor.var(var);
+//             }
+//             Self::Id(expr) => {
+//                 expr.visit(visitor);
+//             }
+//             Self::Member { lhs, .. } => {
+//                 lhs.visit(visitor);
+//             }
+//             Self::Index { lhs, indices } => {
+//                 lhs.visit(visitor);
+//                 for index in indices {
+//                     index.visit(visitor);
+//                 }
+//             }
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub enum Var {
@@ -325,21 +331,20 @@ fn parse_var(pair: Pair<'_, Rule>) -> Var {
     let mut inner = pair.into_inner();
     let id = inner.next().unwrap();
     match id.as_rule() {
-        Rule::global => Var::Global(inner.next().unwrap().as_str().to_string()),
-        Rule::id => Var::Local(id.as_str().to_string()),
+        Rule::global => Var::Global(inner.next().unwrap().as_str().into()),
+        Rule::id => Var::Local(id.as_str().into()),
         _ => unreachable!("bad var: {id:?}"),
     }
 }
 
-fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<AssignLhs> {
+fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<Expr> {
     let mut inner = pair.into_inner();
     let id = inner.next().unwrap();
     let mut lhs = match id.as_rule() {
-        Rule::var => Box::new(AssignLhs::Var(parse_var(id))),
+        Rule::var => Box::new(Expr::Var(parse_var(id))),
         Rule::assign_id => {
             let mut inner = id.into_inner();
-            let expr = parse_expr(inner.next().unwrap());
-            Box::new(AssignLhs::Id(expr))
+            return parse_expr(inner.next().unwrap());
         }
         _ => unreachable!("bad assign lhs: {id:?}"),
     };
@@ -347,13 +352,13 @@ fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<AssignLhs> {
         match op.as_rule() {
             Rule::member => {
                 let mut inner = op.into_inner();
-                let id = inner.next().unwrap().as_str().to_string();
-                lhs = Box::new(AssignLhs::Member { lhs, id })
+                let name = inner.next().unwrap().as_str().into();
+                lhs = Box::new(Expr::Member { lhs, name })
             }
             Rule::index => {
                 let inner = op.into_inner();
                 let indices = inner.map(parse_expr).collect();
-                lhs = Box::new(AssignLhs::Index { lhs, indices })
+                lhs = Box::new(Expr::Index { lhs, indices })
             }
             _ => unreachable!("bad assign lhs op: {op:?}"),
         }
@@ -392,11 +397,11 @@ pub enum Expr {
         rhs: Box<Expr>,
     },
     Member {
-        expr: Box<Expr>,
-        id: String,
+        lhs: Box<Expr>,
+        name: String,
     },
     Index {
-        expr: Box<Expr>,
+        lhs: Box<Expr>,
         indices: Vec<Box<Expr>>,
     },
     Call {
@@ -422,10 +427,10 @@ impl Expr {
                 lhs.visit(visitor);
                 rhs.visit(visitor);
             }
-            Self::Member { expr, .. } => {
+            Self::Member { lhs: expr, .. } => {
                 expr.visit(visitor);
             }
-            Self::Index { expr, indices } => {
+            Self::Index { lhs: expr, indices } => {
                 expr.visit(visitor);
                 for index in indices {
                     index.visit(visitor);
@@ -446,19 +451,26 @@ fn parse_expr(pair: Pair<'_, Rule>) -> Box<Expr> {
 
 fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> {
     pratt
-        .map_primary(|primary| match primary.as_rule() {
-            Rule::expr => parse_expr_rec(primary, pratt),
-            Rule::call_expr => {
-                let mut inner = primary.into_inner();
-                let id = inner.next().unwrap().as_str().to_string();
-                let args = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
-                Box::new(Expr::Call { id, args })
+        .map_primary(|primary| {
+            match primary.as_rule() {
+                Rule::expr => parse_expr_rec(primary, pratt),
+                Rule::call_expr => {
+                    let mut inner = primary.into_inner();
+                    let id = inner.next().unwrap().as_str().into();
+                    let args = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
+                    Box::new(Expr::Call { id, args })
+                }
+                Rule::var => Box::new(Expr::Var(parse_var(primary))),
+                Rule::int => Box::new(Expr::Int(primary.as_str().parse().unwrap())),
+                Rule::float => Box::new(Expr::Float(primary.as_str().parse().unwrap())),
+                Rule::str => {
+                    let source = primary.as_str();
+                    // trim quotes
+                    let source = &source[1..source.len() - 1];
+                    Box::new(Expr::String(source.into()))
+                }
+                _ => unreachable!("bad primary: {primary:?}"),
             }
-            Rule::var => Box::new(Expr::Var(parse_var(primary))),
-            Rule::int => Box::new(Expr::Int(primary.as_str().parse().unwrap())),
-            Rule::float => Box::new(Expr::Float(primary.as_str().parse().unwrap())),
-            Rule::str => Box::new(Expr::String(primary.as_str().to_string())),
-            _ => unreachable!("bad primary: {primary:?}"),
         })
         .map_prefix(|op, expr| {
             let op = match op.as_rule() {
@@ -475,13 +487,13 @@ fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> 
         .map_postfix(|expr, op| match op.as_rule() {
             Rule::member => {
                 let mut inner = op.into_inner();
-                let id = inner.next().unwrap().as_str().to_string();
-                Box::new(Expr::Member { expr, id })
+                let name = inner.next().unwrap().as_str().into();
+                Box::new(Expr::Member { lhs: expr, name })
             }
             Rule::index => {
                 let inner = op.into_inner();
                 let indices = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
-                Box::new(Expr::Index { expr, indices })
+                Box::new(Expr::Index { lhs: expr, indices })
             }
             Rule::post_incr => Box::new(Expr::Unary {
                 op: UnaryOp::PostIncr,

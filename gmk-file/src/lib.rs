@@ -1,14 +1,17 @@
 //! Based on https://github.com/IsmAvatar/LateralGM
 //! and https://enigma-dev.org/docs/Wiki/GM_format
 
+use std::collections::BTreeMap;
+use std::io::Write;
+
 use nom::bytes::complete::take;
 use nom::combinator::flat_map;
 use nom::error::ParseError;
 use nom::number::complete::le_u32;
 use nom_derive::{NomLE, Parse};
-use std::io::Write;
+use num_enum::TryFromPrimitive;
 
-use settings::GameSettings;
+pub use settings::*;
 
 mod settings;
 
@@ -174,6 +177,14 @@ pub struct ResourceChunk<T> {
     pub items: Vec<Option<ResourceItem<T>>>,
 }
 
+impl<T> std::ops::Index<u32> for ResourceChunk<T> {
+    type Output = T;
+
+    fn index(&self, index: u32) -> &Self::Output {
+        &self.items[index as usize].as_ref().unwrap().data
+    }
+}
+
 impl<'a, T> IntoIterator for &'a ResourceChunk<T> {
     type Item = (&'a str, &'a T);
     type IntoIter = ResourceChunkIter<'a, T>;
@@ -224,8 +235,10 @@ pub struct ResourceItem<T> {
 impl<T> std::fmt::Debug for ResourceChunk<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "NamedResources {{")?;
-        for item in self.items.iter().flatten() {
-            writeln!(f, "    {:?},", item.name)?;
+        for (index, item) in self.items.iter().enumerate() {
+            if let Some(item) = item {
+                writeln!(f, "    {index} = {:?},", item.name)?;
+            }
         }
         write!(f, "}}")?;
         Ok(())
@@ -374,24 +387,212 @@ pub struct Object {
     pub persistent: Bool32,
     pub parent_object_index: i32,
     pub mask_sprite_index: i32,
-    pub event_types_count: u32,
-    #[nom(Count = "(event_types_count + 1)")]
-    pub event_types: Vec<EventType>,
+    #[nom(Parse = "parse_events")]
+    pub events: BTreeMap<EventId, Event>,
 }
 
-#[derive(Debug, NomLE)]
-#[nom(GenericErrors)]
-pub struct EventType {
-    pub events: Vec<Event>,
-    #[nom(Verify = "*_end == -1")]
-    _end: i32,
+fn parse_events<'nom, E: ParseError<&'nom [u8]>>(
+    input: &'nom [u8],
+) -> nom::IResult<&'nom [u8], BTreeMap<EventId, Event>, E> {
+    let (mut input2, max_event_type) = le_u32(input)?;
+    let mut result = BTreeMap::new();
+
+    for event_type_id in 0..=max_event_type {
+        loop {
+            let (input, event_id) = le_u32(input2)?;
+            if event_id == u32::MAX {
+                input2 = input;
+                break;
+            }
+            let id = EventId::from((event_type_id, event_id));
+            let (input, event) = Event::parse(input)?;
+
+            result.insert(id, event);
+            input2 = input;
+        }
+    }
+
+    Ok((input2, result))
+}
+
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum EventTypeId {
+    Create = 0,
+    Destroy = 1,
+    Alarm = 2,
+    Step = 3,
+    Collision = 4,
+    Keyboard = 5,
+    Mouse = 6,
+    Other = 7,
+    Draw = 8,
+    KeyPress = 9,
+    KeyRelease = 10,
+    Trigger = 11,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[non_exhaustive]
+pub enum EventId {
+    Create,              // 0
+    Destroy,             // 1
+    Alarm(u32),          // 2
+    Step(StepEventId),   // 3
+    Collision(u32),      // 4
+    Keyboard(u32),       // 5
+    Mouse(u32),          // 6
+    Other(OtherEventId), // 7
+    Draw(DrawEventId),   // 8
+    KeyPress(u32),       // 9
+    KeyRelease(u32),     // 10
+    Trigger(u32),        // 11
+}
+
+impl From<(u32, u32)> for EventId {
+    fn from(value: (u32, u32)) -> Self {
+        match value {
+            (0, 0) => Self::Create,
+            (0, id) => panic!("invalid create event id: {id}"),
+            (1, 0) => Self::Destroy,
+            (1, id) => panic!("invalid destroy event id: {id}"),
+            (2, id) => Self::Alarm(id),
+            (3, id) => Self::Step(id.try_into().expect("invalid step event id")),
+            (4, id) => Self::Collision(id),
+            (5, id) => Self::Keyboard(id),
+            (6, id) => Self::Mouse(id),
+            (7, id) => Self::Other(id.try_into().expect("invalid other event id")),
+            (8, id) => Self::Draw(id.try_into().expect("invalid draw event id")),
+            (9, id) => Self::KeyPress(id),
+            (10, id) => Self::KeyRelease(id),
+            (11, id) => Self::Trigger(id),
+            (type_id, _) => panic!("unknown event type id: {type_id}"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
+pub enum StepEventId {
+    Normal = 0,
+    Begin = 1,
+    End = 2,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
+pub enum KeyboardEventId {
+    NoKey = 0,
+    AnyKey = 1,
+    EnterKey = 2,
+    DeleteKey = 3,
+    InsertKey = 4,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
+pub enum MouseEventId {
+    LeftButton = 0,
+    RightButton = 1,
+    MiddleButton = 2,
+    NoButton = 3,
+    LeftPress = 4,
+    RightPress = 5,
+    MiddlePress = 6,
+    LeftRelease = 7,
+    RightRelease = 8,
+    MiddleRelease = 9,
+    MouseEnter = 10,
+    MouseLeave = 11,
+
+    GlobalLeftButton = 50,
+    GlobalRightButton = 51,
+    GlobalMiddleButton = 52,
+    GlobalLeftPress = 53,
+    GlobalRightPress = 54,
+    GlobalMiddlePress = 55,
+    GlobalLeftRelease = 56,
+    GlobalRightRelease = 57,
+    GlobalMiddleRelease = 58,
+
+    MouseWheelUp = 60,
+    MouseWheelDown = 61,
+    // 23 joystick events...
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
+pub enum OtherEventId {
+    Outside = 0,
+    Boundary = 1,
+    GameStart = 2,
+    GameEnd = 3,
+    RoomStart = 4,
+    RoomEnd = 5,
+    NoMoreLives = 6,
+    AnimationEnd = 7,
+    EndOfPath = 8,
+    NoMoreHealth = 9,
+    User0 = 10,
+    User1 = 11,
+    User2 = 12,
+    User3 = 13,
+    User4 = 14,
+    User5 = 15,
+    User6 = 16,
+    User7 = 17,
+    User8 = 18,
+    User9 = 19,
+    User10 = 20,
+    User11 = 21,
+    User12 = 22,
+    User13 = 23,
+    User14 = 24,
+    User15 = 25,
+    CloseWindow = 30,
+    OutsideView0 = 40,
+    OutsideView1 = 41,
+    OutsideView2 = 42,
+    OutsideView3 = 43,
+    OutsideView4 = 44,
+    OutsideView5 = 45,
+    OutsideView6 = 46,
+    OutsideView7 = 47,
+    BoundaryView0 = 50,
+    BoundaryView1 = 51,
+    BoundaryView2 = 52,
+    BoundaryView3 = 53,
+    BoundaryView4 = 54,
+    BoundaryView5 = 55,
+    BoundaryView6 = 56,
+    BoundaryView7 = 57,
+    ImageLoaded = 60,
+    SoundLoaded = 61,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+#[repr(u32)]
+#[non_exhaustive]
+pub enum DrawEventId {
+    Normal = 0,
+    Gui = 60,
+    Resize = 65,
+    Begin = 72,
+    End = 73,
+    GuiBegin = 74,
+    GuiEnd = 75,
+    Pre = 76,
+    Post = 77,
 }
 
 #[derive(Debug, NomLE)]
 #[nom(GenericErrors)]
 pub struct Event {
-    #[nom(Verify = "*number != -1")]
-    pub number: i32,
     pub ver: u32,
     #[nom(LengthCount = "le_u32")]
     pub actions: Vec<Action>,
@@ -513,7 +714,7 @@ pub struct RoomBackground {
     pub visible: Bool32,
     pub foreground_image: Bool32,
     pub background_image_index: i32,
-    pub position: U32x2,
+    pub pos: I32x2,
     pub tile: U32x2,
     pub speed: U32x2,
     pub stretch: Bool32,
@@ -536,7 +737,7 @@ pub struct RoomView {
 #[derive(Debug, NomLE)]
 #[nom(GenericErrors)]
 pub struct RoomInstance {
-    pub pos: U32x2,
+    pub pos: I32x2,
     pub object_index: u32,
     pub id: u32,
     pub creation_code: String32,
@@ -546,7 +747,7 @@ pub struct RoomInstance {
 #[derive(Debug, NomLE)]
 #[nom(GenericErrors)]
 pub struct RoomTile {
-    pub pos: U32x2,
+    pub pos: I32x2,
     pub background_index: u32,
     pub tile: U32x2,
     pub size: U32x2,

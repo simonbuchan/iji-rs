@@ -6,14 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.69"
-thiserror = "1.0.38"
-pest = "2.5.5"
-pest_derive = "2.5.5"
+gml = { path = "gml" }
 gmk-file = { path = "gmk-file" }
+
+anyhow = "1.0.69"
+image = { version = "0.24.5", features = ["bmp"] }
+macroquad = "0.3.25"
+thiserror = "1.0.38"
 
 [profile.dev.package."*"]
 opt-level = 1
 
 [workspace]
-members = ["gmk-file"]
+members = ["gmk-file", "gml"]
