@@ -1,8 +1,8 @@
 COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/"
            | "//" ~ (!NEWLINE ~ ANY)* }
-WHITESPACE = _{ " "+ }
+WHITESPACE = _{ " " | NEWLINE }
 tokens = _{ SOI ~ token* ~ EOI }
-stmts = _{ SOI ~ stmt* ~ EOI }
+script = _{ SOI ~ stmt* ~ EOI }
 
 // statements
 stmt              = _{ if_stmt
@@ -17,22 +17,21 @@ stmt              = _{ if_stmt
                      | assign_stmt
                      | expr_stmt
                      | empty_stmt }
-  if_stmt         = { "if" ~ expr ~ nl ~ stmt ~ ("else" ~ nl ~ stmt)? }
-  repeat_stmt     = { "repeat" ~ expr ~ nl ~ stmt }
-  while_stmt      = { "while" ~ expr ~ nl ~ stmt }
+  if_stmt         = { "if" ~ expr ~ stmt ~ ("else" ~ stmt)? }
+  repeat_stmt     = { "repeat" ~ expr ~ stmt }
+  while_stmt      = { "while" ~ expr ~ stmt }
   for_stmt        = { "for" ~ "(" ~ assign_expr ~ ";" ~
-                      expr ~ ";" ~ (assign_expr | expr) ~ ")" ~ nl ~ stmt }
-  with_stmt       = { "with" ~ expr ~ nl ~ stmt }
+                      expr ~ ";" ~ (assign_expr | expr) ~ ")" ~ stmt }
+  with_stmt       = { "with" ~ expr ~ stmt }
   return_stmt     = { "return" ~ expr ~ sep }
   exit_stmt       = { "exit" ~ sep }
-  block_stmt      = { "{" ~ stmt* ~ "}" ~ nl }
+  block_stmt      = { "{" ~ stmt* ~ "}" }
   var_stmt        = { "var" ~ id ~ sep }
   assign_stmt     = { assign_expr ~ sep }
   expr_stmt       = { expr ~ sep }
-  empty_stmt      = { sep }
+  empty_stmt      = _{ ";" } // can't use sep or it would match empty
 
-nl                = _{ NEWLINE* }
-sep               = _{ ";"? ~ (NEWLINE+ | (NEWLINE* ~ EOI)) }
+sep               = _{ ";"? }
 
 assign_expr       = { assign_lhs ~ assign_op ~ expr }
   assign_lhs      = { (var | assign_id) ~ (member | index)* }

@@ -15,8 +15,8 @@ pub use settings::*;
 
 mod settings;
 
-pub fn parse() -> Content {
-    let mut data = std::fs::read("ref/iji.gmk").unwrap();
+pub fn parse(path: &str) -> Content {
+    let mut data = std::fs::read(path).unwrap();
     let (header, start) = parse_offset::<FileHeader>(&data, 0);
 
     // print!("generating decode table from seed {}...", header.crypt.seed);

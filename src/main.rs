@@ -1,9 +1,11 @@
 #![deny(rust_2018_idioms)]
 
+use anyhow::Context;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use macroquad::prelude::*;
+use rayon::prelude::*;
 
 use gml::eval::Function;
 
@@ -61,12 +63,15 @@ fn write_debug_logs(dir: &str, chunk: &gmk_file::ResourceChunk<impl std::fmt::De
 }
 
 fn main() {
-    let content = gmk_file::parse();
-    for (name, res) in &content.scripts {
-        println!("{name}:");
-        gml::ast::parse(&res.script.0).unwrap();
-    }
-    return;
+    let content = gmk_file::parse("ref/source code/iji.gmk");
+    // for (name, res) in &content.scripts {
+    //     println!("{name}:");
+    //     let parent = std::path::Path::new("ref/unpacked/scripts");
+    //     std::fs::create_dir_all(parent).unwrap();
+    //     std::fs::write(parent.join(format!("{name}.gml")), &res.script.0).unwrap();
+    //     gml::parse(&res.script.0).unwrap();
+    // }
+    // return;
     // write_debug_logs("objects", &content.objects);
     // for (name, object) in &content.objects {
     //     let parent = std::path::Path::new("ref/out/objects").join(name);
@@ -114,53 +119,67 @@ fn main() {
     // return;
     let room = content.rooms.get("rom_main").unwrap();
 
+    let scripts: Vec<Option<(String, gml::ast::Script)>> = content
+        .scripts
+        .items
+        .par_iter()
+        .map(|item| {
+            item.as_ref().map(|item| {
+                let script = gml::parse(&item.data.script.0).unwrap();
+                (item.name.0.clone(), script)
+            })
+        })
+        .collect();
+
     let mut ctx = gml::eval::Context::new();
-    ctx.def_fn(
-        "file_exists",
-        Function::new(|_ctx, args| {
-            let path = args.get(0).cloned().unwrap_or_default().to_str();
-            println!("file_exists: {path:?}");
-            Ok(true.into())
-        }),
-    );
-    ctx.def_fn(
-        "sound_stop_all",
-        Function::new(|_ctx, _args| {
-            println!("sound_stop_all");
-            Ok(gml::eval::Value::Undefined)
-        }),
-    );
+    ctx.def_fn("ord", |_ctx, args| {
+        let value = args[0].to_str();
+        let char = value.chars().next();
+        Ok(char.map_or(().into(), |char| (char as i32).into()))
+    });
+    ctx.def_fn("string", |_ctx, args| Ok(args[0].to_str().into()));
+    ctx.def_fn("string_char_at", |_ctx, args| {
+        let value = args[0].to_str();
+        let index = args[1].to_int();
+        let char = value.get(index as usize..).and_then(|s| s.chars().next());
+        Ok(char.map_or(().into(), |char| (char as i32).into()))
+    });
+    ctx.def_fn("file_exists", |_ctx, args| {
+        let _path = args[0].to_str();
+        Ok(false.into())
+    });
+    ctx.def_fn("file_text_open_write", |_ctx, _args| Ok(().into()));
+    ctx.def_fn("file_text_close", |_ctx, _args| Ok(().into()));
+    ctx.def_fn("file_text_write_string", |_ctx, _args| Ok(().into()));
+    ctx.def_fn("file_text_writeln", |_ctx, _args| Ok(().into()));
+    ctx.def_fn("sound_stop_all", |_ctx, _args| Ok(().into()));
 
-    for (name, script) in &content.scripts {
-        enum Script {
-            Unparsed(String),
-            Parsed(gml::ast::Script),
-        }
-
-        let script = RefCell::new(Script::Unparsed(script.script.0.clone()));
-        ctx.def_fn(
-            name,
-            Function::new(move |ctx, _args| {
-                println!("script {name}");
-                let mut ref_mut = script.borrow_mut();
-                match &*ref_mut {
-                    Script::Unparsed(source) => {
-                        let parsed = gml::parse(source).unwrap();
-                        let result = ctx.exec_script(&parsed);
-
-                        *ref_mut = Script::Parsed(parsed);
-
-                        result
-                    }
-                    Script::Parsed(script) => ctx.exec_script(&script),
-                }
-            }),
-        );
+    for (name, script) in scripts.iter().flatten().cloned() {
+        ctx.def_fn(name.clone(), move |ctx, _args| {
+            println!("{name} start");
+            let result = ctx.exec_script(&script);
+            println!("{name} => {result:?}");
+            result
+        });
     }
 
+    let object_ids = content
+        .objects
+        .items
+        .iter()
+        .map(|entry| {
+            entry.as_ref().map(|o| {
+                // not quite right: should be a set of objects based on instances...
+                let id = ctx.add_object();
+                ctx.global_mut().vars.insert(o.name.0.clone(), id.into());
+                id
+            })
+        })
+        .collect::<Vec<_>>();
+
     for i in &room.instances {
-        let id = ctx.add_object();
         let o = &content.objects[i.object_index];
+        let id = object_ids[i.object_index as usize].unwrap();
         if let Some(create) = o.events.get(&gmk_file::EventId::Create) {
             for action in &create.actions {
                 if action.kind == gmk_file::ActionKind::Code {
@@ -173,10 +192,9 @@ fn main() {
                     && action.exec == gmk_file::ActionExec::Function
                     && action.function_name.0 == "action_execute_script"
                 {
-                    let index = action.argument_values[0].0.parse().unwrap();
-                    let code = &content.scripts[index].script.0;
-                    println!("instance {} create script {index}", i.id);
-                    let script = gml::parse(code).unwrap();
+                    let index: usize = action.argument_values[0].0.parse().unwrap();
+                    let (name, script) = &scripts[index].as_ref().unwrap();
+                    println!("instance {} create script {index} = {name:?}", i.id);
                     let result = ctx.with_instance(id, |ctx| ctx.exec_script(&script));
                     println!("{result:?}");
                 }
@@ -305,8 +323,8 @@ impl<K: Copy + Eq + std::hash::Hash, F: FnMut(K) -> Texture2D> TextureSet<K, F> 
 fn discover_fns(content: &gmk_file::Content) {
     #[derive(Debug, Default)]
     struct Visitor {
-        fn_defs: BTreeSet<gml::String>,
-        fn_refs: BTreeSet<gml::String>,
+        fn_defs: BTreeSet<String>,
+        fn_refs: BTreeSet<String>,
     }
 
     let mut visitor = Visitor::default();

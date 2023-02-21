@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use super::{ast, String};
+use super::ast;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -19,8 +19,8 @@ pub enum Error {
     InvalidObject(Value),
     #[error("invalid object id {0:?}")]
     InvalidId(ObjectId),
-    #[error("accessing property {name:?} on invalid object {id:?}")]
-    UndefinedProperty { id: ObjectId, name: String },
+    #[error("accessing property {name:?} on invalid place {place:?}")]
+    UndefinedProperty { place: Place, name: String },
     #[error("invalid repeat count {0:?}")]
     InvalidCount(Value),
     #[error("invalid condition {0:?}")]
@@ -29,7 +29,7 @@ pub enum Error {
 
 pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum Value {
     Undefined,
     Bool(bool),
@@ -65,7 +65,7 @@ impl Value {
 
     pub fn as_str(&self) -> Option<&str> {
         if let Self::String(value) = self {
-            Some(&*value)
+            Some(value)
         } else {
             None
         }
@@ -104,9 +104,9 @@ impl Value {
     pub fn to_str(&self) -> String {
         match self {
             Self::Undefined => "".into(),
-            Self::Bool(value) => value.to_string().into(),
-            Self::Int(value) => value.to_string().into(),
-            Self::Float(value) => value.to_string().into(),
+            Self::Bool(value) => value.to_string(),
+            Self::Int(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
             Self::String(value) => value.clone(),
         }
     }
@@ -121,6 +121,12 @@ impl Value {
 
 impl Default for Value {
     fn default() -> Self {
+        Self::Undefined
+    }
+}
+
+impl From<()> for Value {
+    fn from(_: ()) -> Self {
         Self::Undefined
     }
 }
@@ -149,15 +155,17 @@ impl From<String> for Value {
     }
 }
 
-impl From<std::string::String> for Value {
-    fn from(value: std::string::String) -> Self {
-        Self::String(value.into())
+impl From<ObjectId> for Value {
+    fn from(value: ObjectId) -> Self {
+        Self::Int(value.0 as i32)
     }
 }
 
-enum Place {
+#[derive(Debug)]
+pub enum Place {
     Value(Value),
     Property(ObjectId, String),
+    Index(Box<Place>, Vec<Value>),
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -181,8 +189,8 @@ impl std::fmt::Debug for ObjectId {
 }
 
 pub struct Object {
-    id: ObjectId,
-    vars: HashMap<String, Value>,
+    pub id: ObjectId,
+    pub vars: HashMap<String, Value>,
 }
 
 impl Object {
@@ -220,8 +228,12 @@ impl Context {
         }
     }
 
-    pub fn def_fn(&mut self, name: impl Into<String>, f: Function) {
-        self.fns.insert(name.into(), f);
+    pub fn def_fn(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(&mut Context, Vec<Value>) -> Result<Value> + 'static,
+    ) {
+        self.fns.insert(name.into(), Function::new(f));
     }
 
     pub fn add_object(&mut self) -> ObjectId {
@@ -276,6 +288,7 @@ impl Context {
                 let object = self.object(id)?;
                 Ok(object.vars.get(&name).cloned().unwrap_or_default())
             }
+            Place::Index(..) => Ok(().into()),
         }
     }
 
@@ -374,12 +387,29 @@ impl Context {
         let lhs = match lhs {
             Place::Value(_) => return Err(Error::AssignToValue),
             Place::Property(id, name) => self.property(id, name)?,
-        };
+            Place::Index(..) => {
+                println!("todo: assigning to index");
+                return Ok(());
+            }
+        }
+        .or_default();
         match assign.op {
             ast::AssignOp::Assign => {
-                *lhs.or_default() = rhs;
+                *lhs = rhs;
             }
-            _ => todo!(),
+            // todo: Float, String, ...
+            ast::AssignOp::AddAssign => {
+                *lhs = (lhs.to_int() + rhs.to_int()).into();
+            }
+            ast::AssignOp::SubAssign => {
+                *lhs = (lhs.to_int() - rhs.to_int()).into();
+            }
+            ast::AssignOp::MulAssign => {
+                *lhs = (lhs.to_int() * rhs.to_int()).into();
+            }
+            ast::AssignOp::DivAssign => {
+                *lhs = (lhs.to_int() / rhs.to_int()).into();
+            }
         }
         Ok(())
     }
@@ -417,47 +447,49 @@ impl Context {
             ast::Expr::Binary { lhs, op, rhs } => {
                 let lhs = self.eval(lhs)?;
                 let rhs = self.eval(rhs)?;
-                match op {
-                    ast::BinaryOp::And => todo!(),
-                    ast::BinaryOp::Or => todo!(),
-                    ast::BinaryOp::Xor => todo!(),
-                    ast::BinaryOp::BitAnd => todo!(),
-                    ast::BinaryOp::BitOr => todo!(),
-                    ast::BinaryOp::BitXor => todo!(),
-                    ast::BinaryOp::Le => todo!(),
-                    ast::BinaryOp::Lt => todo!(),
-                    ast::BinaryOp::Ge => todo!(),
-                    ast::BinaryOp::Gt => todo!(),
-                    ast::BinaryOp::Ne => todo!(),
-                    ast::BinaryOp::Eq => todo!(),
-                    ast::BinaryOp::Add => todo!(),
-                    ast::BinaryOp::Sub => todo!(),
-                    ast::BinaryOp::Mul => todo!(),
-                    ast::BinaryOp::Div => todo!(),
-                    ast::BinaryOp::IDiv => todo!(),
-                    ast::BinaryOp::IMod => todo!(),
-                }
+                let value = match op {
+                    ast::BinaryOp::And => (lhs.to_bool() && rhs.to_bool()).into(),
+                    ast::BinaryOp::Or => (lhs.to_bool() || rhs.to_bool()).into(),
+                    ast::BinaryOp::Xor => (lhs.to_bool() != rhs.to_bool()).into(),
+                    ast::BinaryOp::BitAnd => (lhs.to_int() & rhs.to_int()).into(),
+                    ast::BinaryOp::BitOr => (lhs.to_int() | rhs.to_int()).into(),
+                    ast::BinaryOp::BitXor => (lhs.to_int() ^ rhs.to_int()).into(),
+                    ast::BinaryOp::Le => (lhs <= rhs).into(),
+                    ast::BinaryOp::Lt => (lhs < rhs).into(),
+                    ast::BinaryOp::Ge => (lhs >= rhs).into(),
+                    ast::BinaryOp::Gt => (lhs > rhs).into(),
+                    // todo: coerce (e.g. "0" == 0)?
+                    ast::BinaryOp::Ne => (lhs != rhs).into(),
+                    ast::BinaryOp::Eq => (lhs == rhs).into(),
+                    // todo: float, string?
+                    ast::BinaryOp::Add => (lhs.to_int() + rhs.to_int()).into(),
+                    ast::BinaryOp::Sub => (lhs.to_int() - rhs.to_int()).into(),
+                    ast::BinaryOp::Mul => (lhs.to_int() * rhs.to_int()).into(),
+                    ast::BinaryOp::Div => (lhs.to_int() / rhs.to_int()).into(),
+                    ast::BinaryOp::IDiv => (lhs.to_int() / rhs.to_int()).into(),
+                    ast::BinaryOp::IMod => (lhs.to_int() % rhs.to_int()).into(),
+                };
+                Ok(Place::Value(value))
             }
             ast::Expr::Member { lhs, name } => {
-                // determine lhs object id
-                let id = match self.eval_place(lhs)? {
-                    Place::Value(id) => id.to_id()?,
-                    Place::Property(id, name) => {
-                        // deref property id
-                        let obj = self.object(id)?;
-                        match obj.vars.get(&name) {
-                            None => Err(Error::UndefinedProperty { id, name }),
-                            Some(value) => value.to_id(),
-                        }?
-                    }
-                };
+                let id = self.eval(lhs)?.to_id()?;
                 Ok(Place::Property(id, name.clone()))
             }
             ast::Expr::Index { lhs, indices } => {
-                let lhs = self.eval_place(lhs)?;
-                todo!()
+                let lhs = self.eval_place(lhs)?.into();
+                let indices = indices
+                    .iter()
+                    .map(|index| self.eval(index))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Place::Index(lhs, indices))
             }
-            ast::Expr::Call { id, args } => {
+            ast::Expr::Call {
+                line,
+                column,
+                id,
+                args,
+            } => {
+                // println!("{line}:{column}: {id}()");
                 let f = self
                     .fns
                     .get(id)
