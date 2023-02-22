@@ -1,3 +1,4 @@
+use polonius_workaround::PoloniusExt;
 use std::collections::{hash_map, HashMap};
 use std::rc::Rc;
 
@@ -7,6 +8,8 @@ use super::ast;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("{0}\n  at {}:{}", .1.line, .1.column)]
+    WithPosition(Box<Error>, ast::Pos),
     #[error("unexpected exit")]
     Exit,
     #[error("unexpected return {0:?}")]
@@ -29,6 +32,16 @@ pub enum Error {
 
 pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 
+trait ResultExt<T>: Sized {
+    fn with_position(self, pos: ast::Pos) -> Self;
+}
+
+impl<T> ResultExt<T> for Result<T> {
+    fn with_position(self, pos: ast::Pos) -> Self {
+        self.map_err(|error| Error::WithPosition(Box::new(error), pos))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum Value {
     Undefined,
@@ -36,6 +49,18 @@ pub enum Value {
     Int(i32),
     Float(f64),
     String(String),
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Undefined => write!(f, "undefined"),
+            Value::Bool(value) => write!(f, "{value}"),
+            Value::Int(value) => write!(f, "{value}"),
+            Value::Float(value) => write!(f, "{value:.1}"),
+            Value::String(value) => write!(f, "{value:?}"),
+        }
+    }
 }
 
 impl Value {
@@ -164,6 +189,7 @@ impl From<ObjectId> for Value {
 #[derive(Debug)]
 pub enum Place {
     Value(Value),
+    Var(ast::Var),
     Property(ObjectId, String),
     Index(Box<Place>, Vec<Value>),
 }
@@ -201,8 +227,6 @@ impl Object {
         }
     }
 }
-
-type Property<'a> = hash_map::Entry<'a, String, Value>;
 
 #[derive(Clone)]
 pub struct Function(Rc<dyn Fn(&mut Context, Vec<Value>) -> Result<Value>>);
@@ -242,28 +266,57 @@ impl Context {
         id
     }
 
-    pub fn global(&self) -> &Object {
-        &self.objects[0]
+    pub fn set_global(&mut self, name: impl Into<String>, value: impl Into<Value>) {
+        self.global_mut().vars.insert(name.into(), value.into());
     }
 
-    pub fn global_mut(&mut self) -> &mut Object {
-        &mut self.objects[0]
+    fn global(&self) -> &Object {
+        &self.objects[ObjectId::GLOBAL.0]
     }
 
-    pub fn script_locals(&self) -> &Object {
-        &self.objects[1]
+    fn global_mut(&mut self) -> &mut Object {
+        &mut self.objects[ObjectId::GLOBAL.0]
     }
 
-    pub fn script_locals_mut(&mut self) -> &mut Object {
-        &mut self.objects[1]
-    }
-
-    pub fn instance(&self) -> &Object {
+    fn instance(&self) -> &Object {
         &self.objects[self.instance.0]
     }
 
-    pub fn instance_mut(&mut self) -> &mut Object {
+    fn instance_mut(&mut self) -> &mut Object {
         &mut self.objects[self.instance.0]
+    }
+
+    fn local(&self) -> &Object {
+        &self.objects[ObjectId::LOCAL.0]
+    }
+
+    fn local_mut(&mut self) -> &mut Object {
+        &mut self.objects[ObjectId::LOCAL.0]
+    }
+
+    pub fn var(&self, var: &ast::Var) -> Value {
+        match var {
+            ast::Var::Global(id) => self.global().vars.get(id),
+            ast::Var::Local(id) => self
+                .local()
+                .vars
+                .get(id)
+                .or_else(|| self.instance().vars.get(id))
+                .or_else(|| self.global().vars.get(id)),
+        }
+        .cloned()
+        .unwrap_or_default()
+    }
+
+    pub fn var_mut(&mut self, var: &ast::Var) -> &mut Value {
+        match var {
+            ast::Var::Global(id) => self.global_mut().vars.entry(id.clone()).or_default(),
+            ast::Var::Local(id) => {
+                use polonius_workaround::PoloniusExt as _;
+                self.try_get_mut_with(|x| x.local_mut().vars.get_mut(id))
+                    .unwrap_or_else(|x| x.instance_mut().vars.entry(id.clone()).or_default())
+            }
+        }
     }
 
     pub fn with_instance<R>(
@@ -284,6 +337,7 @@ impl Context {
     fn place_value(&self, place: Place) -> Result<Value> {
         match place {
             Place::Value(value) => Ok(value),
+            Place::Var(var) => Ok(self.var(&var)),
             Place::Property(id, name) => {
                 let object = self.object(id)?;
                 Ok(object.vars.get(&name).cloned().unwrap_or_default())
@@ -300,12 +354,12 @@ impl Context {
         self.objects.get_mut(id.0).ok_or(Error::InvalidId(id))
     }
 
-    fn property(&mut self, id: ObjectId, name: String) -> Result<Property<'_>> {
-        Ok(self.object_mut(id)?.vars.entry(name))
+    fn property(&mut self, id: ObjectId, name: String) -> Result<&mut Value> {
+        Ok(self.object_mut(id)?.vars.entry(name).or_default())
     }
 
     pub fn exec_script(&mut self, script: &ast::Script) -> Result<Value> {
-        let old_locals = std::mem::replace(self.script_locals_mut(), Object::new(ObjectId::LOCAL));
+        let old_locals = std::mem::replace(self.local_mut(), Object::new(ObjectId::LOCAL));
         for stmt in &script.stmts {
             match self.exec(stmt) {
                 Err(Error::Exit) => break,
@@ -313,18 +367,20 @@ impl Context {
                 result => result,
             }?;
         }
-        *self.script_locals_mut() = old_locals;
+        *self.local_mut() = old_locals;
         Ok(Value::Undefined)
     }
 
     pub fn exec(&mut self, stmt: &ast::Stmt) -> Result {
         match stmt {
-            ast::Stmt::Expr(expr) => {
-                self.eval(expr)?;
+            ast::Stmt::Expr { pos, expr } => {
+                self.eval(expr).with_position(*pos)?;
             }
-            ast::Stmt::Var(_) => {}
-            ast::Stmt::Assign(assign) => {
-                self.exec_assign(assign)?;
+            ast::Stmt::Var(id) => {
+                self.local_mut().vars.insert(id.clone(), ().into());
+            }
+            ast::Stmt::Assign { pos, assign } => {
+                self.exec_assign(assign).with_position(*pos)?;
             }
             ast::Stmt::If { cond, body, alt } => {
                 if self.eval(cond)?.to_bool() {
@@ -386,13 +442,13 @@ impl Context {
         let rhs = self.eval(&assign.rhs)?;
         let lhs = match lhs {
             Place::Value(_) => return Err(Error::AssignToValue),
+            Place::Var(var) => self.var_mut(&var),
             Place::Property(id, name) => self.property(id, name)?,
             Place::Index(..) => {
-                println!("todo: assigning to index");
+                // println!("todo: assigning to index");
                 return Ok(());
             }
-        }
-        .or_default();
+        };
         match assign.op {
             ast::AssignOp::Assign => {
                 *lhs = rhs;
@@ -421,12 +477,7 @@ impl Context {
 
     fn eval_place(&mut self, expr: &ast::Expr) -> Result<Place> {
         match expr {
-            ast::Expr::Var(ast::Var::Global(name)) => {
-                Ok(Place::Property(ObjectId::GLOBAL, name.clone()))
-            }
-            ast::Expr::Var(ast::Var::Local(name)) => {
-                Ok(Place::Property(self.instance, name.clone()))
-            }
+            ast::Expr::Var(var) => Ok(Place::Var(var.clone())),
             ast::Expr::Int(value) => Ok(Place::Value(Value::Int(*value))),
             ast::Expr::Float(value) => Ok(Place::Value(Value::Float(*value))),
             ast::Expr::String(value) => Ok(Place::Value(Value::String(value.clone()))),
@@ -483,12 +534,7 @@ impl Context {
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Place::Index(lhs, indices))
             }
-            ast::Expr::Call {
-                line,
-                column,
-                id,
-                args,
-            } => {
+            ast::Expr::Call { pos, id, args } => {
                 // println!("{line}:{column}: {id}()");
                 let f = self
                     .fns
@@ -498,8 +544,9 @@ impl Context {
                 let args = args
                     .iter()
                     .map(|arg| self.eval(arg))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(Place::Value((f.0)(self, args)?))
+                    .collect::<Result<Vec<_>>>()
+                    .with_position(*pos)?;
+                Ok(Place::Value((f.0)(self, args).with_position(*pos)?))
             }
         }
     }

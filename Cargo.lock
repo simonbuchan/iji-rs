@@ -331,6 +331,7 @@ dependencies = [
  "anyhow",
  "pest",
  "pest_derive",
+ "polonius_workaround",
  "thiserror",
 ]
 
@@ -779,6 +780,12 @@ dependencies = [
  "flate2",
  "miniz_oxide",
 ]
+
+[[package]]
+name = "polonius_workaround"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e78357721ac50e17240e67b1f0f553993369b7ff65e140d10f00d23c88d62077"
 
 [[package]]
 name = "proc-macro-crate"

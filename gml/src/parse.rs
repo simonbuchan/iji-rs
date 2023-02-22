@@ -120,14 +120,16 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
             Box::new(Stmt::Var(id))
         }
         Rule::assign_stmt => {
+            let pos = Pos::from(pair.line_col());
             let mut inner = pair.into_inner();
             let assign = parse_assign(inner.next().unwrap());
-            Box::new(Stmt::Assign(assign))
+            Box::new(Stmt::Assign { pos, assign })
         }
         Rule::expr_stmt => {
+            let pos = Pos::from(pair.line_col());
             let mut inner = pair.into_inner();
             let expr = parse_expr(inner.next().unwrap());
-            Box::new(Stmt::Expr(expr))
+            Box::new(Stmt::Expr { pos, expr })
         }
         Rule::empty_stmt => Box::new(Stmt::Empty),
         _ => unreachable!("bad stmt: {pair:?}"),
@@ -198,13 +200,12 @@ fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> 
             match primary.as_rule() {
                 Rule::expr => parse_expr_rec(primary, pratt),
                 Rule::call_expr => {
-                    let (line, column) = primary.line_col();
+                    let pos = Pos::from(primary.line_col());
                     let mut inner = primary.into_inner();
                     let id = inner.next().unwrap().as_str().into();
                     let args = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
                     Box::new(Expr::Call {
-                        line,
-                        column,
+                        pos,
                         id,
                         args,
                     })

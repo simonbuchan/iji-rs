@@ -25,11 +25,29 @@ impl Script {
     }
 }
 
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+pub struct Pos {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl From<(usize, usize)> for Pos {
+    fn from((line, column): (usize, usize)) -> Self {
+        Self { line, column }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    Expr(Box<Expr>),
     Var(String),
-    Assign(Assign),
+    Assign {
+        pos: Pos,
+        assign: Assign,
+    },
+    Expr {
+        pos: Pos,
+        expr: Box<Expr>,
+    },
     If {
         cond: Box<Expr>,
         body: Box<Stmt>,
@@ -69,12 +87,12 @@ impl Stmt {
             return;
         }
         match self {
-            Self::Expr(expr) => {
-                expr.visit(visitor);
-            }
             Self::Var(_) => {}
-            Self::Assign(assign) => {
+            Self::Assign { assign, .. } => {
                 assign.visit(visitor);
+            }
+            Self::Expr { expr, .. } => {
+                expr.visit(visitor);
             }
             Self::If { cond, body, alt } => {
                 cond.visit(visitor);
@@ -176,8 +194,7 @@ pub enum Expr {
         indices: Vec<Box<Expr>>,
     },
     Call {
-        line: usize,
-        column: usize,
+        pos: Pos,
         id: String,
         args: Vec<Box<Expr>>,
     },

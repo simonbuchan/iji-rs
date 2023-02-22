@@ -132,6 +132,12 @@ fn main() {
         .collect();
 
     let mut ctx = gml::eval::Context::new();
+    ctx.def_fn("floor", |_ctx, args| Ok(args[0].to_float().floor().into()));
+    ctx.def_fn("random", |_ctx, args| {
+        let range = args[0].to_float();
+        Ok(rand::gen_range(0.0, range).into())
+    });
+
     ctx.def_fn("ord", |_ctx, args| {
         let value = args[0].to_str();
         let char = value.chars().next();
@@ -144,6 +150,7 @@ fn main() {
         let char = value.get(index as usize..).and_then(|s| s.chars().next());
         Ok(char.map_or(().into(), |char| (char as i32).into()))
     });
+
     ctx.def_fn("file_exists", |_ctx, args| {
         let _path = args[0].to_str();
         Ok(false.into())
@@ -152,7 +159,17 @@ fn main() {
     ctx.def_fn("file_text_close", |_ctx, _args| Ok(().into()));
     ctx.def_fn("file_text_write_string", |_ctx, _args| Ok(().into()));
     ctx.def_fn("file_text_writeln", |_ctx, _args| Ok(().into()));
+
     ctx.def_fn("sound_stop_all", |_ctx, _args| Ok(().into()));
+
+    ctx.def_fn("keyboard_unset_map", |_ctx, _args| Ok(().into()));
+
+    ctx.def_fn("instance_create", |ctx, args| {
+        println!("instance_create({args:?})");
+        let id = ctx.add_object();
+        // todo: also add to room instances
+        Ok(id.into())
+    });
 
     for (name, script) in scripts.iter().flatten().cloned() {
         ctx.def_fn(name.clone(), move |ctx, _args| {
@@ -171,7 +188,7 @@ fn main() {
             entry.as_ref().map(|o| {
                 // not quite right: should be a set of objects based on instances...
                 let id = ctx.add_object();
-                ctx.global_mut().vars.insert(o.name.0.clone(), id.into());
+                ctx.set_global(&o.name.0, id);
                 id
             })
         })
@@ -182,12 +199,10 @@ fn main() {
         let id = object_ids[i.object_index as usize].unwrap();
         if let Some(create) = o.events.get(&gmk_file::EventId::Create) {
             for action in &create.actions {
-                if action.kind == gmk_file::ActionKind::Code {
+                let script = if action.kind == gmk_file::ActionKind::Code {
                     let code = &action.argument_values[0].0;
                     println!("instance {} create inline code", i.id);
-                    let script = gml::parse(code).unwrap();
-                    let result = ctx.with_instance(id, |ctx| ctx.exec_script(&script));
-                    println!("{result:?}");
+                    Some(std::borrow::Cow::Owned(gml::parse(code).unwrap()))
                 } else if action.kind == gmk_file::ActionKind::Normal
                     && action.exec == gmk_file::ActionExec::Function
                     && action.function_name.0 == "action_execute_script"
@@ -195,8 +210,19 @@ fn main() {
                     let index: usize = action.argument_values[0].0.parse().unwrap();
                     let (name, script) = &scripts[index].as_ref().unwrap();
                     println!("instance {} create script {index} = {name:?}", i.id);
-                    let result = ctx.with_instance(id, |ctx| ctx.exec_script(&script));
-                    println!("{result:?}");
+                    Some(std::borrow::Cow::Borrowed(script))
+                } else {
+                    None
+                };
+                if let Some(script) = script {
+                    match ctx.with_instance(id, |ctx| ctx.exec_script(&script)) {
+                        Err(error) => {
+                            println!("failed: {error}");
+                        }
+                        Ok(value) => {
+                            println!("result: {value}");
+                        }
+                    }
                 }
             }
         }
