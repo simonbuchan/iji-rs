@@ -1,13 +1,10 @@
 #![deny(rust_2018_idioms)]
 
-use anyhow::Context;
-use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::marker::PhantomData;
 
 use macroquad::prelude::*;
 use rayon::prelude::*;
-
-use gml::eval::Function;
 
 fn conf() -> Conf {
     Conf {
@@ -23,36 +20,327 @@ fn color_u32(value: u32) -> Color {
     Color::from_rgba(r, g, b, a)
 }
 
-fn clear_background_u32(color: u32) {
-    clear_background(color_u32(color));
+struct AssetId<T>(u32, PhantomData<T>);
+impl<T> Clone for AssetId<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, self.1)
+    }
+}
+impl<T> Copy for AssetId<T> {}
+
+struct AssetSet<T> {
+    items: HashMap<u32, T>,
 }
 
-// struct Room {
-//     background: Color,
-//     layers: Vec<Layer>,
-// }
-//
-// struct Layer {
-//     enabled: bool,
-//     texture: Texture2D,
-//     pos: Vec2,
-//     source: Option<Rect>,
-//     tile: bool,
-// }
-//
-// impl Layer {
-//     fn draw(&self, view: View) {
-//         let pos = self.pos - view.offset;
-//         if !self.tile {
-//             draw_texture_ex(self.texture, self.pos.x)
-//         }
-//     }
-// }
-//
-// struct View {
-//     screen_rect: Rect,
-//     offset: Vec2,
-// }
+impl<T> Default for AssetSet<T> {
+    fn default() -> Self {
+        Self {
+            items: Default::default(),
+        }
+    }
+}
+
+impl<T> AssetSet<T> {
+    fn load_with(&mut self, index: u32, load: impl FnOnce() -> T) -> AssetId<T> {
+        self.items.entry(index).or_insert_with(load);
+        AssetId(index, PhantomData)
+    }
+
+    fn get(&self, id: AssetId<T>) -> &T {
+        &self.items[&id.0]
+    }
+}
+
+#[derive(Default)]
+struct Assets {
+    backgrounds: AssetSet<BackgroundAsset>,
+    sprites: AssetSet<SpriteAsset>,
+}
+
+struct Loader<'content> {
+    content: &'content gmk_file::Content,
+    assets: Assets,
+}
+
+impl<'content> Loader<'content> {
+    fn new(content: &'content gmk_file::Content) -> Self {
+        Self {
+            content,
+            assets: Default::default(),
+        }
+    }
+}
+
+impl Loader<'_> {
+    fn get_background(&mut self, index: u32) -> AssetId<BackgroundAsset> {
+        self.assets.backgrounds.load_with(index, || {
+            BackgroundAsset::load(&self.content.backgrounds[index])
+        })
+    }
+
+    fn get_sprite(&mut self, index: u32) -> AssetId<SpriteAsset> {
+        self.assets
+            .sprites
+            .load_with(index, || SpriteAsset::load(&self.content.sprites[index]))
+    }
+}
+
+struct BackgroundAsset {
+    texture: Texture2D,
+}
+
+impl Drop for BackgroundAsset {
+    fn drop(&mut self) {
+        self.texture.delete();
+    }
+}
+
+impl BackgroundAsset {
+    fn load(def: &gmk_file::Background) -> Self {
+        let data = def.image.as_ref().unwrap().data.as_ref().unwrap();
+        let texture = Texture2D::from_file_with_format(data, None);
+        // always present since GM 5.x
+        // let tiling = def.tiling.as_ref().unwrap();
+
+        // let mut tile_size = None;
+        // if tiling.enabled == gmk_file::Bool32::True {
+        //     tiling.
+        // }
+        Self { texture }
+    }
+}
+
+struct SpriteAsset {
+    size: Vec2,
+    origin: Vec2,
+    textures: Vec<Texture2D>,
+}
+
+impl Drop for SpriteAsset {
+    fn drop(&mut self) {
+        for t in &self.textures {
+            t.delete();
+        }
+    }
+}
+
+impl SpriteAsset {
+    fn load(def: &gmk_file::Sprite) -> Self {
+        let textures = def
+            .subimages
+            .iter()
+            .map(|image| {
+                let data = image.data.as_ref().unwrap();
+                let mut image = Image::from_file_with_format(data, None);
+
+                if def.transparent == gmk_file::Bool32::True {
+                    let data = image.get_image_data_mut();
+                    let t = data[0];
+                    for p in data {
+                        if *p == t {
+                            *p = [0, 0, 0, 0];
+                        }
+                    }
+                }
+
+                Texture2D::from_image(&image)
+            })
+            .collect::<Vec<_>>();
+
+        let size = Vec2::new(def.size.0 as f32, def.size.1 as f32);
+        let origin = Vec2::new(def.origin.0 as f32, def.origin.1 as f32);
+
+        Self {
+            size,
+            origin,
+            textures,
+        }
+    }
+}
+
+struct Room {
+    assets: Assets,
+    view: View,
+    background_color: Color,
+    background_layers: Vec<Layer>,
+    tiles: Vec<Tile>,
+    instances: Vec<Instance>,
+    foreground_layers: Vec<Layer>,
+}
+
+impl Room {
+    pub fn load(loader: &mut Loader<'_>, ctx: &mut gml::eval::Context, name: &str) -> Self {
+        loader.assets = Assets::default();
+
+        let def = loader.content.rooms.get(name).unwrap();
+        let mut background_layers = vec![];
+        let mut tiles = vec![];
+        let mut instances = vec![];
+        let mut foreground_layers = vec![];
+
+        for b in &def.backgrounds {
+            let Ok(index) = b.background_image_index.try_into() else {
+                continue;
+            };
+
+            if b.foreground_image.into() {
+                &mut foreground_layers
+            } else {
+                &mut background_layers
+            }
+            .push(Layer {
+                enabled: b.visible.into(),
+                pos: IVec2::new(b.pos.0, b.pos.1).as_vec2(),
+                asset: loader.get_background(index),
+                tile: false,
+                source: None,
+            });
+        }
+
+        for t in &def.tiles {
+            tiles.push(Tile {
+                depth: t.depth,
+                asset: loader.get_background(t.background_index),
+                pos: IVec2::new(t.pos.0, t.pos.1).as_vec2(),
+                source: Rect {
+                    x: t.tile.0 as f32,
+                    y: t.tile.1 as f32,
+                    w: t.size.0 as f32,
+                    h: t.size.1 as f32,
+                },
+            });
+        }
+
+        for i in &def.instances {
+            assert_eq!(&*i.creation_code, "");
+            let obj = &loader.content.objects[i.object_index];
+            assert!(obj.mask_sprite_index < 0);
+            assert!(obj.parent_object_index < 0);
+            instances.push(Instance {
+                frame: 0,
+                visible: obj.visible.into(),
+                depth: obj.depth.into(),
+                gml_object: ctx.add_object(),
+                object_index: i.object_index,
+                sprite_asset: obj
+                    .sprite_index
+                    .try_into()
+                    .ok()
+                    .map(|index| loader.get_sprite(index)),
+                pos: IVec2::new(i.pos.0, i.pos.1).as_vec2(),
+            });
+        }
+
+        Self {
+            assets: std::mem::take(&mut loader.assets),
+            view: View {
+                offset: Vec2::default(),
+                size: Vec2::new(screen_width(), screen_height()),
+            },
+            background_color: color_u32(def.background_color),
+            background_layers,
+            tiles,
+            instances,
+            foreground_layers,
+        }
+    }
+
+    fn draw(&self) {
+        clear_background(self.background_color);
+        for layer in &self.background_layers {
+            layer.draw(&self.assets, &self.view);
+        }
+        for tile in &self.tiles {
+            tile.draw(&self.assets, &self.view);
+        }
+        for instance in &self.instances {
+            instance.draw(&self.assets, &self.view);
+        }
+        for layer in &self.background_layers {
+            layer.draw(&self.assets, &self.view);
+        }
+    }
+}
+
+struct View {
+    offset: Vec2,
+    size: Vec2,
+}
+
+struct Layer {
+    enabled: bool,
+    asset: AssetId<BackgroundAsset>,
+    pos: Vec2,
+    source: Option<Rect>,
+    tile: bool,
+}
+
+impl Layer {
+    fn draw(&self, assets: &Assets, view: &View) {
+        if !self.enabled {
+            return;
+        }
+
+        let pos = self.pos - view.offset;
+        if !self.tile {
+            draw_texture_ex(
+                assets.backgrounds.get(self.asset).texture,
+                pos.x,
+                pos.y,
+                WHITE,
+                DrawTextureParams {
+                    ..Default::default()
+                },
+            )
+        }
+    }
+}
+
+struct Tile {
+    depth: u32,
+    asset: AssetId<BackgroundAsset>,
+    pos: Vec2,
+    source: Rect,
+}
+
+impl Tile {
+    fn draw(&self, assets: &Assets, view: &View) {
+        let pos = self.pos - view.offset;
+        draw_texture_ex(
+            assets.backgrounds.get(self.asset).texture,
+            pos.x,
+            pos.y,
+            WHITE,
+            DrawTextureParams {
+                source: Some(self.source),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+struct Instance {
+    sprite_asset: Option<AssetId<SpriteAsset>>,
+    depth: u32,
+    visible: bool,
+    object_index: u32,
+    gml_object: gml::eval::ObjectId,
+    pos: Vec2,
+    frame: usize,
+}
+
+impl Instance {
+    fn draw(&self, assets: &Assets, view: &View) {
+        let Some(sprite) = self.sprite_asset else {
+            return;
+        };
+        let sprite = assets.sprites.get(sprite);
+
+        let texture = sprite.textures[self.frame];
+        let pos = self.pos + sprite.origin - view.offset;
+        draw_texture(texture, pos.x, pos.y, WHITE);
+    }
+}
 
 fn write_debug_logs(dir: &str, chunk: &gmk_file::ResourceChunk<impl std::fmt::Debug>) {
     for (name, item) in chunk {
@@ -228,121 +516,17 @@ fn main() {
         }
     }
 
-    macroquad::Window::from_config(conf(), run_main(content))
+    macroquad::Window::from_config(conf(), run_main(ctx, content))
 }
 
-async fn run_main(content: gmk_file::Content) {
-    let room = content.rooms.get("rom_main").unwrap();
+async fn run_main(mut ctx: gml::eval::Context, content: gmk_file::Content) {
+    let mut loader = Loader::new(&content);
 
-    let mut background_textures = HashMap::new();
-
-    let mut sprite_textures = HashMap::new();
-
-    let mut get_background = |index: u32| {
-        let background = &content.backgrounds[index];
-        *background_textures.entry(index).or_insert_with(|| {
-            let data = background.image.as_ref().unwrap().data.as_ref().unwrap();
-            Texture2D::from_file_with_format(data, None)
-        })
-    };
+    let room = Room::load(&mut loader, &mut ctx, "rom_main");
 
     loop {
-        let frame = (get_time() * 15.0) as u32;
-
-        clear_background_u32(content.settings.background_color);
-        if room.draw_background_color == gmk_file::Bool32::True {
-            clear_background_u32(room.background_color);
-        }
-
-        let p = &room.views[0].view_pos;
-
-        for b in &room.backgrounds {
-            if b.background_image_index < 0 {
-                continue;
-            }
-
-            let texture = get_background(b.background_image_index as u32);
-
-            draw_texture(texture, b.pos.0 as f32, b.pos.1 as f32, WHITE);
-        }
-
-        for t in &room.tiles {
-            let texture = get_background(t.background_index);
-            draw_texture_ex(
-                texture,
-                t.pos.0 as f32,
-                t.pos.1 as f32,
-                WHITE,
-                DrawTextureParams {
-                    source: Some(Rect {
-                        x: t.tile.0 as f32,
-                        y: t.tile.1 as f32,
-                        w: t.size.0 as f32,
-                        h: t.size.1 as f32,
-                    }),
-                    ..Default::default()
-                },
-            );
-        }
-
-        for i in &room.instances {
-            let obj = &content.objects[i.object_index];
-            if obj.visible == gmk_file::Bool32::False || obj.sprite_index < 0 {
-                continue;
-            }
-            let sprite = &content.sprites[obj.sprite_index as u32];
-
-            let textures = sprite_textures.entry(obj.sprite_index).or_insert_with(|| {
-                sprite
-                    .subimages
-                    .iter()
-                    .map(|image| {
-                        let data = image.data.as_ref().unwrap();
-                        let mut image = Image::from_file_with_format(data, None);
-
-                        if sprite.transparent == gmk_file::Bool32::True {
-                            let data = image.get_image_data_mut();
-                            let t = data[0];
-                            for p in data {
-                                if *p == t {
-                                    *p = [0, 0, 0, 0];
-                                }
-                            }
-                        }
-
-                        Texture2D::from_image(&image)
-                    })
-                    .collect::<Vec<_>>()
-            });
-
-            let texture = textures[frame as usize % textures.len()];
-            draw_texture(
-                texture,
-                (i.pos.0 + sprite.origin.0 as i32) as f32,
-                (i.pos.1 + sprite.origin.1 as i32) as f32,
-                WHITE,
-            );
-        }
-
+        room.draw();
         next_frame().await;
-    }
-}
-
-struct TextureSet<K, F> {
-    map: HashMap<K, Texture2D>,
-    load: F,
-}
-
-impl<K: Copy + Eq + std::hash::Hash, F: FnMut(K) -> Texture2D> TextureSet<K, F> {
-    pub fn new(load: F) -> Self {
-        Self {
-            map: Default::default(),
-            load,
-        }
-    }
-
-    pub fn get(&mut self, index: K) -> Texture2D {
-        *self.map.entry(index).or_insert_with(|| (self.load)(index))
     }
 }
 

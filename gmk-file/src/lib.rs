@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::ops::Deref;
 
 use nom::bytes::complete::take;
 use nom::combinator::flat_map;
@@ -269,7 +270,7 @@ pub struct Sound {
 #[nom(GenericErrors)]
 pub struct Sprite {
     pub ver: u32,
-    pub width: U32x2,
+    pub size: U32x2,
     pub bbox_left: i32,
     pub bbox_right: i32,
     pub bbox_bottom: i32,
@@ -896,6 +897,14 @@ impl std::fmt::Debug for Guid {
 #[nom(GenericErrors)]
 pub struct String32(#[nom(Parse = "parse_string")] pub String);
 
+impl Deref for String32 {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl std::fmt::Display for String32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.0.fmt(f)
@@ -965,4 +974,10 @@ impl std::fmt::Debug for ZlibImage {
 pub enum Bool32 {
     False,
     True,
+}
+
+impl From<Bool32> for bool {
+    fn from(value: Bool32) -> bool {
+        value == Bool32::True
+    }
 }
