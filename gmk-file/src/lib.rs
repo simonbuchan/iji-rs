@@ -178,11 +178,18 @@ pub struct ResourceChunk<T> {
     pub items: Vec<Option<ResourceItem<T>>>,
 }
 
+impl<T> ResourceChunk<T> {
+    pub fn item(&self, index: u32) -> (&str, &T) {
+        let item = self.items[index as usize].as_ref().unwrap();
+        (&item.name.0, &item.data)
+    }
+}
+
 impl<T> std::ops::Index<u32> for ResourceChunk<T> {
     type Output = T;
 
     fn index(&self, index: u32) -> &Self::Output {
-        &self.items[index as usize].as_ref().unwrap().data
+        self.item(index).1
     }
 }
 

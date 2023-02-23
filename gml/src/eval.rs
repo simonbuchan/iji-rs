@@ -1,5 +1,4 @@
-use polonius_workaround::PoloniusExt;
-use std::collections::{hash_map, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use thiserror::Error;
@@ -21,7 +20,7 @@ pub enum Error {
     #[error("invalid object id {0:?}")]
     InvalidObject(Value),
     #[error("invalid object id {0:?}")]
-    InvalidId(ObjectId),
+    InvalidId(i32),
     #[error("accessing property {name:?} on invalid place {place:?}")]
     UndefinedProperty { place: Place, name: String },
     #[error("invalid repeat count {0:?}")]
@@ -194,12 +193,12 @@ pub enum Place {
     Index(Box<Place>, Vec<Value>),
 }
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-pub struct ObjectId(usize);
+#[derive(Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub struct ObjectId(i32);
 
 impl ObjectId {
-    const GLOBAL: ObjectId = ObjectId(0);
-    const LOCAL: ObjectId = ObjectId(1);
+    const GLOBAL: Self = Self(0);
+    const LOCAL: Self = Self(-1);
 }
 
 impl std::fmt::Debug for ObjectId {
@@ -214,17 +213,37 @@ impl std::fmt::Debug for ObjectId {
     }
 }
 
-pub struct Object {
-    pub id: ObjectId,
+pub trait Object {
+    fn member(&self, name: &str) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    fn set_member(&mut self, name: &str, value: Value) -> Result {
+        Ok(())
+    }
+
+    fn index(&self, args: &[Value]) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    fn set_index(&mut self, args: &[Value], value: Value) -> Result {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct Namespace {
     pub vars: HashMap<String, Value>,
 }
 
-impl Object {
-    pub fn new(id: ObjectId) -> Self {
-        Self {
-            id,
-            vars: Default::default(),
-        }
+impl Object for Namespace {
+    fn member(&self, name: &str) -> Result<Option<Value>> {
+        Ok(self.vars.get(name).cloned())
+    }
+
+    fn set_member(&mut self, name: &str, value: Value) -> Result {
+        self.vars.insert(name.into(), value);
+        Ok(())
     }
 }
 
@@ -238,15 +257,21 @@ impl Function {
 }
 
 pub struct Context {
-    pub objects: Vec<Object>,
-    pub instance: ObjectId,
-    pub fns: HashMap<String, Function>,
+    global: Namespace,
+    local: Namespace,
+    instances: HashMap<i32, Box<dyn Object>>,
+    last_instance_id: i32,
+    instance: ObjectId,
+    fns: HashMap<String, Function>,
 }
 
 impl Context {
     pub fn new() -> Self {
         Self {
-            objects: vec![Object::new(ObjectId::GLOBAL), Object::new(ObjectId::LOCAL)],
+            global: Namespace::default(),
+            local: Namespace::default(),
+            instances: Default::default(),
+            last_instance_id: 0,
             instance: ObjectId::GLOBAL,
             fns: Default::default(),
         }
@@ -260,51 +285,77 @@ impl Context {
         self.fns.insert(name.into(), Function::new(f));
     }
 
-    pub fn add_object(&mut self) -> ObjectId {
-        let id = ObjectId(self.objects.len());
-        self.objects.push(Object::new(id));
-        id
+    pub fn new_instance(&mut self, value: Option<Box<dyn Object>>) -> ObjectId {
+        self.last_instance_id += 1;
+        let id = self.last_instance_id;
+        self.instances
+            .insert(id, value.unwrap_or_else(|| Box::new(Namespace::default())));
+        ObjectId(id)
     }
 
     pub fn set_global(&mut self, name: impl Into<String>, value: impl Into<Value>) {
         self.global_mut().vars.insert(name.into(), value.into());
     }
 
-    fn global(&self) -> &Object {
-        &self.objects[ObjectId::GLOBAL.0]
+    fn global(&self) -> &Namespace {
+        &self.global
     }
 
-    fn global_mut(&mut self) -> &mut Object {
-        &mut self.objects[ObjectId::GLOBAL.0]
+    fn global_mut(&mut self) -> &mut Namespace {
+        &mut self.global
     }
 
-    fn instance(&self) -> &Object {
-        &self.objects[self.instance.0]
+    fn instance(&self) -> &dyn Object {
+        self.object(self.instance).unwrap()
     }
 
-    fn instance_mut(&mut self) -> &mut Object {
-        &mut self.objects[self.instance.0]
+    fn instance_mut(&mut self) -> &mut dyn Object {
+        self.object_mut(self.instance).unwrap()
     }
 
-    fn local(&self) -> &Object {
-        &self.objects[ObjectId::LOCAL.0]
+    fn local(&self) -> &Namespace {
+        &self.local
     }
 
-    fn local_mut(&mut self) -> &mut Object {
-        &mut self.objects[ObjectId::LOCAL.0]
+    fn local_mut(&mut self) -> &mut Namespace {
+        &mut self.local
+    }
+
+    fn object(&self, id: ObjectId) -> Result<&dyn Object> {
+        match id {
+            ObjectId::GLOBAL => Ok(&self.global),
+            ObjectId::LOCAL => Ok(&self.local),
+            ObjectId(id) => self
+                .instances
+                .get(&id)
+                .map(|b| &**b)
+                .ok_or(Error::InvalidId(id)),
+        }
+    }
+
+    fn object_mut(&mut self, id: ObjectId) -> Result<&mut dyn Object> {
+        match id {
+            ObjectId::GLOBAL => Ok(&mut self.global),
+            ObjectId::LOCAL => Ok(&mut self.local),
+            ObjectId(id) => self
+                .instances
+                .get_mut(&id)
+                .map(|b| &mut **b)
+                .ok_or(Error::InvalidId(id)),
+        }
     }
 
     pub fn var(&self, var: &ast::Var) -> Value {
         match var {
-            ast::Var::Global(id) => self.global().vars.get(id),
+            ast::Var::Global(id) => self.global().vars.get(id).cloned(),
             ast::Var::Local(id) => self
                 .local()
                 .vars
                 .get(id)
-                .or_else(|| self.instance().vars.get(id))
-                .or_else(|| self.global().vars.get(id)),
+                .cloned()
+                .or_else(|| self.instance().member(&id).ok().flatten())
+                .or_else(|| self.global().vars.get(id).cloned()),
         }
-        .cloned()
         .unwrap_or_default()
     }
 
@@ -324,7 +375,7 @@ impl Context {
         instance: ObjectId,
         body: impl FnOnce(&mut Self) -> Result<R>,
     ) -> Result<R> {
-        if instance.0 >= self.objects.len() {
+        if instance.0 >= self.instances.len() {
             return Err(Error::InvalidId(instance));
         }
 
@@ -344,18 +395,6 @@ impl Context {
             }
             Place::Index(..) => Ok(().into()),
         }
-    }
-
-    fn object(&self, id: ObjectId) -> Result<&Object> {
-        self.objects.get(id.0).ok_or(Error::InvalidId(id))
-    }
-
-    fn object_mut(&mut self, id: ObjectId) -> Result<&mut Object> {
-        self.objects.get_mut(id.0).ok_or(Error::InvalidId(id))
-    }
-
-    fn property(&mut self, id: ObjectId, name: String) -> Result<&mut Value> {
-        Ok(self.object_mut(id)?.vars.entry(name).or_default())
     }
 
     pub fn exec_script(&mut self, script: &ast::Script) -> Result<Value> {
