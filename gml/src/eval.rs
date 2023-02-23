@@ -9,6 +9,8 @@ use super::ast;
 pub enum Error {
     #[error("{0}\n  at {}:{}", .1.line, .1.column)]
     WithPosition(Box<Error>, ast::Pos),
+    #[error("{0}\n  in {1}")]
+    WithScriptName(Box<Error>, String),
     #[error("unexpected exit")]
     Exit,
     #[error("unexpected return {0:?}")]
@@ -33,14 +35,22 @@ pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 
 trait ResultExt<T>: Sized {
     fn with_position(self, pos: ast::Pos) -> Self;
+    fn with_script_name(self, name: String) -> Self;
 }
 
 impl<T> ResultExt<T> for Result<T> {
     fn with_position(self, pos: ast::Pos) -> Self {
         self.map_err(|error| Error::WithPosition(Box::new(error), pos))
     }
+
+    fn with_script_name(self, name: String) -> Self {
+        self.map_err(|error| Error::WithScriptName(Box::new(error), name))
+    }
 }
 
+/// Values are any possible immutable result of evaluating an expression.
+/// They cannot explicitly reference an object, but may contain an integer
+/// that can be coerced to an object id in the context of an assignment.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum Value {
     Undefined,
@@ -100,7 +110,7 @@ impl Value {
             Self::Undefined => false,
             Self::Bool(value) => *value,
             Self::Int(value) => *value != 0,
-            Self::Float(value) => !value.is_nan() && *value != 0.0,
+            Self::Float(value) => !value.is_nan() && *value > 0.5,
             Self::String(value) => !value.is_empty(),
         }
     }
@@ -213,8 +223,9 @@ impl std::fmt::Debug for ObjectId {
     }
 }
 
-pub trait Object {
-    fn member(&self, name: &str) -> Result<Option<Value>> {
+#[allow(unused_variables)]
+pub trait Object: 'static {
+    fn member(&self, name: &str) -> Result<Option<&Value>> {
         Ok(None)
     }
 
@@ -222,7 +233,7 @@ pub trait Object {
         Ok(())
     }
 
-    fn index(&self, args: &[Value]) -> Result<Option<Value>> {
+    fn index(&self, args: &[Value]) -> Result<Option<&Value>> {
         Ok(None)
     }
 
@@ -237,12 +248,40 @@ pub struct Namespace {
 }
 
 impl Object for Namespace {
-    fn member(&self, name: &str) -> Result<Option<Value>> {
-        Ok(self.vars.get(name).cloned())
+    fn member(&self, name: &str) -> Result<Option<&Value>> {
+        Ok(self.vars.get(name))
     }
 
     fn set_member(&mut self, name: &str, value: Value) -> Result {
         self.vars.insert(name.into(), value);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct Array {
+    pub items: Vec<Value>,
+}
+
+impl Object for Array {
+    fn index(&self, args: &[Value]) -> Result<Option<&Value>> {
+        let index = args.get(0).cloned().unwrap_or_default().to_int();
+        let value = index
+            .try_into()
+            .ok()
+            .and_then(|index: usize| self.items.get(index));
+        Ok(value)
+    }
+
+    fn set_index(&mut self, args: &[Value], value: Value) -> Result {
+        let Ok(index) = args.get(0).cloned().unwrap_or_default().to_int().try_into() else {
+            return Ok(())
+        };
+
+        if self.items.len() <= index {
+            self.items.resize(index + 1, Value::Undefined);
+        }
+        self.items[index] = value;
         Ok(())
     }
 }
@@ -289,7 +328,7 @@ impl Context {
         self.last_instance_id += 1;
         let id = self.last_instance_id;
         self.instances
-            .insert(id, value.unwrap_or_else(|| Box::new(Namespace::default())));
+            .insert(id, value.unwrap_or_else(|| Box::<Namespace>::default()));
         ObjectId(id)
     }
 
@@ -345,29 +384,39 @@ impl Context {
         }
     }
 
-    pub fn var(&self, var: &ast::Var) -> Value {
+    pub fn var(&self, var: &ast::Var) -> Result<Value> {
+        // Local tries script locals, then active instance, then global.
+        // Global only tries global.
         match var {
-            ast::Var::Global(id) => self.global().vars.get(id).cloned(),
-            ast::Var::Local(id) => self
-                .local()
-                .vars
-                .get(id)
-                .cloned()
-                .or_else(|| self.instance().member(&id).ok().flatten())
-                .or_else(|| self.global().vars.get(id).cloned()),
-        }
-        .unwrap_or_default()
-    }
-
-    pub fn var_mut(&mut self, var: &ast::Var) -> &mut Value {
-        match var {
-            ast::Var::Global(id) => self.global_mut().vars.entry(id.clone()).or_default(),
+            ast::Var::Global(id) => Ok(self.global().vars.get(id).cloned().unwrap_or_default()),
             ast::Var::Local(id) => {
-                use polonius_workaround::PoloniusExt as _;
-                self.try_get_mut_with(|x| x.local_mut().vars.get_mut(id))
-                    .unwrap_or_else(|x| x.instance_mut().vars.entry(id.clone()).or_default())
+                if let Some(value) = self.local().vars.get(id) {
+                    return Ok(value.clone());
+                }
+                if let Some(value) = self.instance().member(id)? {
+                    return Ok(value.clone());
+                }
+                Ok(self.global().vars.get(id).cloned().unwrap_or_default())
             }
         }
+    }
+
+    pub fn set_var(&mut self, var: &ast::Var, value: Value) -> Result {
+        // Local sets script local if it exists, otherwise it sets on active instance.
+        // It will not fall back to a global.
+        match var {
+            ast::Var::Global(id) => {
+                *self.global_mut().vars.entry(id.clone()).or_default() = value;
+            }
+            ast::Var::Local(id) => {
+                if let Some(value_ref) = self.local.vars.get_mut(id) {
+                    *value_ref = value;
+                } else {
+                    self.instance_mut().set_member(id, value)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn with_instance<R>(
@@ -375,8 +424,8 @@ impl Context {
         instance: ObjectId,
         body: impl FnOnce(&mut Self) -> Result<R>,
     ) -> Result<R> {
-        if instance.0 >= self.instances.len() {
-            return Err(Error::InvalidId(instance));
+        if !self.instances.contains_key(&instance.0) {
+            return Err(Error::InvalidId(instance.0));
         }
 
         let old = std::mem::replace(&mut self.instance, instance);
@@ -385,25 +434,57 @@ impl Context {
         res
     }
 
-    fn place_value(&self, place: Place) -> Result<Value> {
+    fn place_value(&self, place: &Place) -> Result<Value> {
         match place {
-            Place::Value(value) => Ok(value),
-            Place::Var(var) => Ok(self.var(&var)),
+            Place::Value(value) => Ok(value.clone()),
+            Place::Var(var) => self.var(var),
             Place::Property(id, name) => {
-                let object = self.object(id)?;
-                Ok(object.vars.get(&name).cloned().unwrap_or_default())
+                let object = self.object(*id)?;
+                Ok(object.member(name)?.cloned().unwrap_or_default())
             }
-            Place::Index(..) => Ok(().into()),
+            Place::Index(lhs, indices) => {
+                let lhs = self.place_value(lhs)?;
+                if matches!(lhs, Value::Undefined) {
+                    return Ok(Value::Undefined);
+                }
+                let lhs = self.object(lhs.to_id()?)?;
+                Ok(lhs.index(indices)?.cloned().unwrap_or_default())
+            }
         }
     }
 
+    fn set_place(&mut self, place: &Place, value: Value) -> Result {
+        match place {
+            Place::Value(_) => return Err(Error::AssignToValue),
+            Place::Var(var) => {
+                self.set_var(var, value)?;
+            }
+            Place::Property(id, name) => {
+                self.object_mut(*id)?.set_member(name, value)?;
+            }
+            Place::Index(lhs_place, indices) => {
+                // need to be careful here, in `foo[123] = bar`
+                // foo may not be defined.
+                let mut lhs = self.place_value(lhs_place)?;
+                if matches!(lhs, Value::Undefined) {
+                    let array = self.new_instance(Some(Box::<Array>::default()));
+                    lhs = array.into();
+                    self.set_place(lhs_place, lhs.clone())?;
+                }
+                let lhs = self.object_mut(lhs.to_id()?)?;
+                lhs.set_index(indices, value)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn exec_script(&mut self, script: &ast::Script) -> Result<Value> {
-        let old_locals = std::mem::replace(self.local_mut(), Object::new(ObjectId::LOCAL));
+        let old_locals = std::mem::take(self.local_mut());
         for stmt in &script.stmts {
             match self.exec(stmt) {
                 Err(Error::Exit) => break,
                 Err(Error::Return(value)) => return Ok(value),
-                result => result,
+                result => result.with_script_name(script.name.clone()),
             }?;
         }
         *self.local_mut() = old_locals;
@@ -477,41 +558,29 @@ impl Context {
     }
 
     fn exec_assign(&mut self, assign: &ast::Assign) -> Result<()> {
-        let lhs = self.eval_place(&assign.lhs)?;
+        let lhs_place = self.eval_place(&assign.lhs)?;
         let rhs = self.eval(&assign.rhs)?;
-        let lhs = match lhs {
-            Place::Value(_) => return Err(Error::AssignToValue),
-            Place::Var(var) => self.var_mut(&var),
-            Place::Property(id, name) => self.property(id, name)?,
-            Place::Index(..) => {
-                // println!("todo: assigning to index");
-                return Ok(());
+        let value = match assign.op {
+            ast::AssignOp::Assign => rhs,
+            op => {
+                let lhs = self.place_value(&lhs_place)?;
+                match op {
+                    ast::AssignOp::Assign => unreachable!(),
+                    // todo: Float, String, ...
+                    ast::AssignOp::AddAssign => (lhs.to_int() + rhs.to_int()).into(),
+                    ast::AssignOp::SubAssign => (lhs.to_int() - rhs.to_int()).into(),
+                    ast::AssignOp::MulAssign => (lhs.to_int() * rhs.to_int()).into(),
+                    ast::AssignOp::DivAssign => (lhs.to_int() / rhs.to_int()).into(),
+                }
             }
         };
-        match assign.op {
-            ast::AssignOp::Assign => {
-                *lhs = rhs;
-            }
-            // todo: Float, String, ...
-            ast::AssignOp::AddAssign => {
-                *lhs = (lhs.to_int() + rhs.to_int()).into();
-            }
-            ast::AssignOp::SubAssign => {
-                *lhs = (lhs.to_int() - rhs.to_int()).into();
-            }
-            ast::AssignOp::MulAssign => {
-                *lhs = (lhs.to_int() * rhs.to_int()).into();
-            }
-            ast::AssignOp::DivAssign => {
-                *lhs = (lhs.to_int() / rhs.to_int()).into();
-            }
-        }
+        self.set_place(&lhs_place, value)?;
         Ok(())
     }
 
     pub fn eval(&mut self, expr: &ast::Expr) -> Result<Value> {
         let place = self.eval_place(expr)?;
-        self.place_value(place)
+        self.place_value(&place)
     }
 
     fn eval_place(&mut self, expr: &ast::Expr) -> Result<Place> {
@@ -523,10 +592,10 @@ impl Context {
             ast::Expr::Unary { op, expr } => {
                 let place = self.eval_place(expr)?;
                 let value = match op {
-                    ast::UnaryOp::Not => (!self.place_value(place)?.to_bool()).into(),
-                    ast::UnaryOp::Pos => self.place_value(place)?.to_int().into(),
-                    ast::UnaryOp::Neg => (-self.place_value(place)?.to_int()).into(),
-                    ast::UnaryOp::BitNot => (!self.place_value(place)?.to_int()).into(),
+                    ast::UnaryOp::Not => (!self.place_value(&place)?.to_bool()).into(),
+                    ast::UnaryOp::Pos => self.place_value(&place)?.to_int().into(),
+                    ast::UnaryOp::Neg => (-self.place_value(&place)?.to_int()).into(),
+                    ast::UnaryOp::BitNot => (!self.place_value(&place)?.to_int()).into(),
                     ast::UnaryOp::PreIncr => todo!(),
                     ast::UnaryOp::PreDecr => todo!(),
                     ast::UnaryOp::PostIncr => todo!(),

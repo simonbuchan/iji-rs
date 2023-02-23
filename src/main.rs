@@ -1,7 +1,5 @@
 #![deny(rust_2018_idioms)]
 
-use std::collections::BTreeSet;
-
 use macroquad::prelude::*;
 
 mod assets;
@@ -16,13 +14,13 @@ fn conf() -> Conf {
     }
 }
 
-fn write_debug_logs(dir: &str, chunk: &gmk_file::ResourceChunk<impl std::fmt::Debug>) {
-    for (name, item) in chunk {
-        let parent = std::path::Path::new("ref/out").join(dir).join(name);
-        std::fs::create_dir_all(&parent).unwrap();
-        std::fs::write(parent.join("debug.log"), format!("{item:#?}")).unwrap();
-    }
-}
+// fn write_debug_logs(dir: &str, chunk: &gmk_file::ResourceChunk<impl std::fmt::Debug>) {
+//     for (name, item) in chunk {
+//         let parent = std::path::Path::new("ref/out").join(dir).join(name);
+//         std::fs::create_dir_all(&parent).unwrap();
+//         std::fs::write(parent.join("debug.log"), format!("{item:#?}")).unwrap();
+//     }
+// }
 
 fn main() {
     let content = gmk_file::parse("ref/source code/iji.gmk");
@@ -35,8 +33,16 @@ async fn run_main(content: gmk_file::Content) {
     ctx.scripts = scripts::define_scripts(&mut ctx.gml, &content);
     for (index, item) in content.objects.items.iter().enumerate() {
         let Some(item) = item else { continue; };
+
         struct ObjectRef(u32);
-        ctx.gml.set_global(item.name.0.clone(), ObjectRef(index as i32));
+
+        impl gml::eval::Object for ObjectRef {}
+
+        let id = ctx
+            .gml
+            .new_instance(Some(Box::new(ObjectRef(index as u32))));
+
+        ctx.gml.set_global(item.name.0.clone(), id);
     }
     let mut room = state::Room::load(&mut ctx, "rom_main");
 
@@ -45,15 +51,7 @@ async fn run_main(content: gmk_file::Content) {
     loop {
         room.dispatch(
             &mut ctx,
-            &gmk_file::EventId::Draw(gmk_file::DrawEventId::Begin),
-        );
-        room.dispatch(
-            &mut ctx,
             &gmk_file::EventId::Draw(gmk_file::DrawEventId::Normal),
-        );
-        room.dispatch(
-            &mut ctx,
-            &gmk_file::EventId::Draw(gmk_file::DrawEventId::End),
         );
         room.draw(&ctx);
 
@@ -82,6 +80,11 @@ mod scripts {
             Ok(char.map_or(().into(), |char| (char as i32).into()))
         });
         ctx.def_fn("string", |_ctx, args| Ok(args[0].to_str().into()));
+        ctx.def_fn("string_length", |_ctx, args| {
+            Ok(i32::try_from(args[0].to_str().len())
+                .expect("string too long")
+                .into())
+        });
         ctx.def_fn("string_char_at", |_ctx, args| {
             let value = args[0].to_str();
             let index = args[1].to_int();
@@ -104,10 +107,15 @@ mod scripts {
 
         ctx.def_fn("instance_create", |ctx, args| {
             println!("instance_create({args:?})");
-            let id = ctx.new_instance();
+            let id = ctx.new_instance(None);
             // todo: also add to room instances
             Ok(id.into())
         });
+
+        ctx.def_fn("draw_set_font", |_ctx, _args| Ok(().into()));
+        ctx.def_fn("draw_set_color", |_ctx, _args| Ok(().into()));
+        ctx.def_fn("draw_text_ext", |_ctx, _args| Ok(().into()));
+        ctx.def_fn("draw_sprite", |_ctx, _args| Ok(().into()));
 
         ctx
     }
@@ -124,7 +132,7 @@ mod scripts {
             .enumerate()
             .flat_map(|(index, item)| {
                 item.as_ref().map(|item| {
-                    let script = gml::parse(&item.data.script.0).unwrap();
+                    let script = gml::parse(&item.name.0, &item.data.script.0).unwrap();
                     (index as u32, item.name.0.clone(), Arc::new(script))
                 })
             })
@@ -133,12 +141,7 @@ mod scripts {
         for (_, name, script) in &scripts {
             let name = name.clone();
             let script = script.clone();
-            ctx.def_fn(name.clone(), move |ctx, _args| {
-                println!("{name} start");
-                let result = ctx.exec_script(&script);
-                println!("{name} => {result:?}");
-                result
-            });
+            ctx.def_fn(name.clone(), move |ctx, _args| ctx.exec_script(&script));
         }
 
         scripts
@@ -148,47 +151,47 @@ mod scripts {
     }
 }
 
-fn discover_fns(content: &gmk_file::Content) {
-    #[derive(Debug, Default)]
-    struct Visitor {
-        fn_defs: BTreeSet<String>,
-        fn_refs: BTreeSet<String>,
-    }
-
-    let mut visitor = Visitor::default();
-
-    for (id, source) in enum_scripts(&content) {
-        if let ScriptId::Resource(name) = id {
-            visitor.fn_defs.insert(name.into());
-        }
-        let file = gml::parse(source).unwrap();
-        file.visit(&mut visitor);
-    }
-
-    for undef in visitor.fn_refs.difference(&visitor.fn_defs) {
-        println!("- {undef}");
-    }
-
-    impl gml::ast::Visitor for Visitor {
-        fn expr(&mut self, value: &gml::ast::Expr) -> bool {
-            if let gml::ast::Expr::Call { id, .. } = value {
-                self.fn_refs.insert(id.clone());
-            }
-            true
-        }
-    }
-}
-
-fn enum_scripts(content: &gmk_file::Content) -> impl Iterator<Item = (ScriptId<'_>, &str)> {
-    content
-        .scripts
-        .iter()
-        .map(|(name, res)| (ScriptId::Resource(name), res.script.0.as_str()))
-}
-
-enum ScriptId<'a> {
-    Resource(&'a str),
-    RoomInit,
-    InstanceInit,
-    TimelineAction,
-}
+// fn discover_fns(content: &gmk_file::Content) {
+//     #[derive(Debug, Default)]
+//     struct Visitor {
+//         fn_defs: BTreeSet<String>,
+//         fn_refs: BTreeSet<String>,
+//     }
+//
+//     let mut visitor = Visitor::default();
+//
+//     for (id, source) in enum_scripts(&content) {
+//         if let ScriptId::Resource(name) = id {
+//             visitor.fn_defs.insert(name.into());
+//         }
+//         let file = gml::parse(name, source).unwrap();
+//         file.visit(&mut visitor);
+//     }
+//
+//     for undef in visitor.fn_refs.difference(&visitor.fn_defs) {
+//         println!("- {undef}");
+//     }
+//
+//     impl gml::ast::Visitor for Visitor {
+//         fn expr(&mut self, value: &gml::ast::Expr) -> bool {
+//             if let gml::ast::Expr::Call { id, .. } = value {
+//                 self.fn_refs.insert(id.clone());
+//             }
+//             true
+//         }
+//     }
+// }
+//
+// fn enum_scripts(content: &gmk_file::Content) -> impl Iterator<Item = (ScriptId<'_>, &str)> {
+//     content
+//         .scripts
+//         .iter()
+//         .map(|(name, res)| (ScriptId::Resource(name), res.script.0.as_str()))
+// }
+//
+// enum ScriptId<'a> {
+//     Resource(&'a str),
+//     RoomInit,
+//     InstanceInit,
+//     TimelineAction,
+// }

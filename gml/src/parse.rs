@@ -9,6 +9,7 @@ use super::ast::*;
 #[grammar = "gml.pest"]
 struct G;
 
+#[allow(dead_code)]
 pub fn tokenize(input: &str) -> anyhow::Result<()> {
     for pair in G::parse(Rule::tokens, input)? {
         if pair.as_rule() == Rule::EOI {
@@ -22,7 +23,8 @@ pub fn tokenize(input: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn parse(input: &str) -> anyhow::Result<Script> {
+pub fn parse(name: &str, input: &str) -> anyhow::Result<Script> {
+    let name = name.to_string();
     let pairs = G::parse(Rule::script, input)?;
     let mut stmts = vec![];
     for pair in pairs {
@@ -31,9 +33,10 @@ pub fn parse(input: &str) -> anyhow::Result<Script> {
         }
         stmts.push(parse_stmt(pair));
     }
-    Ok(Script { stmts })
+    Ok(Script { name, stmts })
 }
 
+#[allow(dead_code)]
 pub fn dump_parse(input: &str) -> anyhow::Result<()> {
     let pairs = G::parse(Rule::script, input)?;
     dump_tree(0, pairs);
@@ -204,11 +207,7 @@ fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> 
                     let mut inner = primary.into_inner();
                     let id = inner.next().unwrap().as_str().into();
                     let args = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
-                    Box::new(Expr::Call {
-                        pos,
-                        id,
-                        args,
-                    })
+                    Box::new(Expr::Call { pos, id, args })
                 }
                 Rule::var => Box::new(Expr::Var(parse_var(primary))),
                 Rule::int => Box::new(Expr::Int(primary.as_str().parse().unwrap())),

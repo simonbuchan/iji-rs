@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use macroquad::prelude::*;
 
-trait Asset {
+pub trait Asset {
     type Resource;
 
     fn load(res: &Self::Resource) -> Self;
@@ -48,7 +48,7 @@ impl<T: Asset> AssetSet<T> {
             self.indices.insert(name.clone(), index);
             (name, T::load(&item.data))
         });
-        AssetId(index, PhantomData)
+        AssetId::new(index)
     }
 
     pub fn entry(&self, id: AssetId<T>) -> (&str, &T) {
@@ -182,13 +182,5 @@ impl Asset for SpriteAsset {
             origin,
             textures,
         }
-    }
-}
-
-impl Asset for gml::ast::Script {
-    type Resource = gmk_file::Script;
-
-    fn load(res: &gmk_file::Script) -> Self {
-        gml::parse(&res.script).unwrap()
     }
 }

@@ -14,6 +14,7 @@ pub trait Visitor {
 
 #[derive(Clone, Debug)]
 pub struct Script {
+    pub name: String,
     pub stmts: Vec<Box<Stmt>>,
 }
 

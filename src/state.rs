@@ -1,3 +1,4 @@
+use gml::eval::Value;
 use macroquad::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -92,24 +93,31 @@ impl Room {
         for i in &def.instances {
             assert_eq!(&*i.creation_code, "");
             let pos = IVec2::new(i.pos.0, i.pos.1).as_vec2();
-            result.create_instance(ctx, pos, i.object_index);
+            result.create_instance(ctx, i.id, pos, i.object_index);
         }
 
         result
     }
 
-    pub fn create_instance(&mut self, ctx: &mut Context<'_>, pos: Vec2, object_index: u32) {
+    pub fn create_instance(
+        &mut self,
+        ctx: &mut Context<'_>,
+        id: u32,
+        pos: Vec2,
+        object_index: u32,
+    ) {
         let obj = &ctx.loader.content().objects[object_index];
 
         assert!(obj.mask_sprite_index < 0);
         assert!(obj.parent_object_index < 0);
 
         self.instances.push(Instance {
+            id,
             pos,
             frame: 0,
             visible: obj.visible.into(),
             depth: obj.depth,
-            gml_id: ctx.gml.new_instance(),
+            gml_id: ctx.gml.new_instance(None),
             object_index,
             sprite_asset: obj
                 .sprite_index
@@ -143,26 +151,29 @@ impl Room {
                 for action in &event.actions {
                     let script = if action.kind == gmk_file::ActionKind::Code {
                         let code = &action.argument_values[0].0;
-                        println!("instance {event_id:?} inline code");
-                        Some(std::borrow::Cow::Owned(gml::parse(code).unwrap()))
+                        // println!("instance {event_id:?} inline code");
+                        Some(std::borrow::Cow::Owned(
+                            gml::parse(&format!("instance-{}-{event_id:?}", i.id), code).unwrap(),
+                        ))
                     } else if action.kind == gmk_file::ActionKind::Normal
                         && action.exec == gmk_file::ActionExec::Function
                         && action.function_name.0 == "action_execute_script"
                     {
                         let index = action.argument_values[0].0.parse().unwrap();
                         let script = ctx.scripts[&index].as_ref();
-                        println!("instance {event_id:?} script {index}");
+                        // println!("instance {event_id:?} script {index}");
                         Some(std::borrow::Cow::Borrowed(script))
                     } else {
                         None
                     };
                     if let Some(script) = script {
                         match ctx.gml.with_instance(id, |ctx| ctx.exec_script(&script)) {
-                            Err(error) => {
-                                println!("failed: {error}");
+                            Err(error) => panic!("{error}"),
+                            Ok(Value::Undefined) => {
+                                // println!("{} complete", script.name)
                             }
                             Ok(value) => {
-                                println!("result: {value}");
+                                // println!("{} returned {value}", script.name)
                             }
                         }
                     }
@@ -234,6 +245,7 @@ impl Draw for Tile {
 }
 
 struct Instance {
+    id: u32,
     sprite_asset: Option<AssetId<SpriteAsset>>,
     depth: u32,
     visible: bool,
