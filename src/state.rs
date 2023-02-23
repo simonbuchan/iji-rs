@@ -10,15 +10,17 @@ fn color_u32(value: u32) -> Color {
     Color::from_rgba(r, g, b, a)
 }
 
+type GmlContext = gml::eval::Context<crate::scripts::Global>;
+
 pub struct Context<'content> {
     pub loader: Loader<'content>,
-    pub gml: gml::eval::Context,
+    pub gml: GmlContext,
     // fixme
     pub scripts: HashMap<u32, Arc<gml::ast::Script>>,
 }
 
 impl<'content> Context<'content> {
-    pub fn new(content: &'content gmk_file::Content, gml: gml::eval::Context) -> Self {
+    pub fn new(content: &'content gmk_file::Content, gml: GmlContext) -> Self {
         Self {
             loader: Loader::new(content),
             gml,
@@ -145,7 +147,6 @@ impl Room {
 
     pub fn dispatch(&mut self, ctx: &mut Context<'_>, event_id: &gmk_file::EventId) {
         for i in &self.instances {
-            let id = i.gml_id;
             let def = &ctx.loader.content().objects[i.object_index];
             if let Some(event) = def.events.get(event_id) {
                 for action in &event.actions {
@@ -167,12 +168,15 @@ impl Room {
                         None
                     };
                     if let Some(script) = script {
-                        match ctx.gml.with_instance(id, |ctx| ctx.exec_script(&script)) {
+                        match ctx
+                            .gml
+                            .with_instance(i.gml_id, |ctx| ctx.exec_script(&script))
+                        {
                             Err(error) => panic!("{error}"),
                             Ok(Value::Undefined) => {
                                 // println!("{} complete", script.name)
                             }
-                            Ok(value) => {
+                            Ok(_value) => {
                                 // println!("{} returned {value}", script.name)
                             }
                         }

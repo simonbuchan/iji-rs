@@ -36,13 +36,18 @@ async fn run_main(content: gmk_file::Content) {
 
         struct ObjectRef(u32);
 
-        impl gml::eval::Object for ObjectRef {}
+        use gml::eval::Object;
+
+        impl Object for ObjectRef {}
 
         let id = ctx
             .gml
             .new_instance(Some(Box::new(ObjectRef(index as u32))));
 
-        ctx.gml.set_global(item.name.0.clone(), id);
+        ctx.gml
+            .global_mut()
+            .set_member(&item.name.0, id.into())
+            .unwrap();
     }
     let mut room = state::Room::load(&mut ctx, "rom_main");
 
@@ -63,11 +68,27 @@ mod scripts {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use gml::eval::Value;
     use macroquad::prelude::*;
     use rayon::prelude::*;
 
-    pub fn create_context() -> gml::eval::Context {
-        let mut ctx = gml::eval::Context::new();
+    #[derive(Default)]
+    pub struct Global {
+        vars: gml::eval::Namespace,
+    }
+
+    impl gml::eval::Object for Global {
+        fn member(&self, name: &str) -> gml::eval::Result<Option<&Value>> {
+            self.vars.member(name)
+        }
+
+        fn set_member(&mut self, name: &str, value: Value) -> gml::eval::Result {
+            self.vars.set_member(name, value)
+        }
+    }
+
+    pub fn create_context() -> gml::eval::Context<Global> {
+        let mut ctx = gml::eval::Context::default();
         ctx.def_fn("floor", |_ctx, args| Ok(args[0].to_float().floor().into()));
         ctx.def_fn("random", |_ctx, args| {
             let range = args[0].to_float();
@@ -121,7 +142,7 @@ mod scripts {
     }
 
     pub fn define_scripts(
-        ctx: &mut gml::eval::Context,
+        ctx: &mut gml::eval::Context<Global>,
         content: &gmk_file::Content,
     ) -> HashMap<u32, Arc<gml::ast::Script>> {
         // scripts parsed in parallel

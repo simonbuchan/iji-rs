@@ -286,28 +286,41 @@ impl Object for Array {
     }
 }
 
-#[derive(Clone)]
-pub struct Function(Rc<dyn Fn(&mut Context, Vec<Value>) -> Result<Value>>);
+type FunctionImpl<Global> = dyn Fn(&mut Context<Global>, Vec<Value>) -> Result<Value>;
 
-impl Function {
-    pub fn new(f: impl Fn(&mut Context, Vec<Value>) -> Result<Value> + 'static) -> Self {
+pub struct Function<Global>(Rc<FunctionImpl<Global>>);
+
+impl<Global> Function<Global> {
+    pub fn new(f: impl Fn(&mut Context<Global>, Vec<Value>) -> Result<Value> + 'static) -> Self {
         Self(Rc::new(f))
     }
 }
 
-pub struct Context {
-    global: Namespace,
+impl<Global> Clone for Function<Global> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+pub struct Context<Global = Namespace> {
+    global: Global,
     local: Namespace,
     instances: HashMap<i32, Box<dyn Object>>,
     last_instance_id: i32,
     instance: ObjectId,
-    fns: HashMap<String, Function>,
+    fns: HashMap<String, Function<Global>>,
 }
 
-impl Context {
-    pub fn new() -> Self {
+impl<Global: Object + Default> Default for Context<Global> {
+    fn default() -> Self {
+        Self::new(Global::default())
+    }
+}
+
+impl<Global: Object> Context<Global> {
+    pub fn new(global: Global) -> Self {
         Self {
-            global: Namespace::default(),
+            global,
             local: Namespace::default(),
             instances: Default::default(),
             last_instance_id: 0,
@@ -319,7 +332,7 @@ impl Context {
     pub fn def_fn(
         &mut self,
         name: impl Into<String>,
-        f: impl Fn(&mut Context, Vec<Value>) -> Result<Value> + 'static,
+        f: impl Fn(&mut Self, Vec<Value>) -> Result<Value> + 'static,
     ) {
         self.fns.insert(name.into(), Function::new(f));
     }
@@ -332,15 +345,11 @@ impl Context {
         ObjectId(id)
     }
 
-    pub fn set_global(&mut self, name: impl Into<String>, value: impl Into<Value>) {
-        self.global_mut().vars.insert(name.into(), value.into());
-    }
-
-    fn global(&self) -> &Namespace {
+    pub fn global(&self) -> &Global {
         &self.global
     }
 
-    fn global_mut(&mut self) -> &mut Namespace {
+    pub fn global_mut(&mut self) -> &mut Global {
         &mut self.global
     }
 
@@ -388,15 +397,25 @@ impl Context {
         // Local tries script locals, then active instance, then global.
         // Global only tries global.
         match var {
-            ast::Var::Global(id) => Ok(self.global().vars.get(id).cloned().unwrap_or_default()),
+            ast::Var::Global(id) => {
+                let value = self.global().member(id)?.cloned();
+                if value.is_none() {
+                    println!("note: reading undefined global: {id}");
+                }
+                Ok(value.unwrap_or_default())
+            }
             ast::Var::Local(id) => {
-                if let Some(value) = self.local().vars.get(id) {
+                if let Some(value) = self.local().member(id)? {
                     return Ok(value.clone());
                 }
                 if let Some(value) = self.instance().member(id)? {
                     return Ok(value.clone());
                 }
-                Ok(self.global().vars.get(id).cloned().unwrap_or_default())
+                if let Some(value) = self.global().member(id)? {
+                    return Ok(value.clone());
+                }
+                println!("note: reading undefined local: {id}");
+                Ok(Value::Undefined)
             }
         }
     }
@@ -406,7 +425,7 @@ impl Context {
         // It will not fall back to a global.
         match var {
             ast::Var::Global(id) => {
-                *self.global_mut().vars.entry(id.clone()).or_default() = value;
+                self.global_mut().set_member(id, value)?;
             }
             ast::Var::Local(id) => {
                 if let Some(value_ref) = self.local.vars.get_mut(id) {
