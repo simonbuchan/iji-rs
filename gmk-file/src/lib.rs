@@ -16,26 +16,30 @@ pub use settings::*;
 
 mod settings;
 
-pub fn parse(path: &str) -> Content {
-    let mut data = std::fs::read(path).unwrap();
-    let (header, start) = parse_offset::<FileHeader>(&data, 0);
+pub fn parse(path: impl AsRef<std::path::Path>) -> Content {
+    return imp(path.as_ref());
 
-    // print!("generating decode table from seed {}...", header.crypt.seed);
-    std::io::stdout().flush().unwrap();
-    let decode_table = generate_decode_table(header.crypt.seed);
-    // println!("done");
+    fn imp(path: &std::path::Path) -> Content {
+        let mut data = std::fs::read(path).unwrap();
+        let (header, start) = parse_offset::<FileHeader>(&data, 0);
 
-    // print!("decoding...");
-    std::io::stdout().flush().unwrap();
-    for pos in (start + 1)..data.len() {
-        data[pos] = decode_table[data[pos] as usize].wrapping_sub((pos % 256) as u8);
+        // print!("generating decode table from seed {}...", header.crypt.seed);
+        std::io::stdout().flush().unwrap();
+        let decode_table = generate_decode_table(header.crypt.seed);
+        // println!("done");
+
+        // print!("decoding...");
+        std::io::stdout().flush().unwrap();
+        for pos in (start + 1)..data.len() {
+            data[pos] = decode_table[data[pos] as usize].wrapping_sub((pos % 256) as u8);
+        }
+        // println!("done");
+
+        // reborrow after mutation
+        let (content, _parsed) = parse_offset::<Content>(&data, start);
+        // dbg!(content, parsed, data.len() - parsed);
+        content
     }
-    // println!("done");
-
-    // reborrow after mutation
-    let (content, _parsed) = parse_offset::<Content>(&data, start);
-    // dbg!(content, parsed, data.len() - parsed);
-    content
 }
 
 fn parse_offset<'nom, T: Parse<&'nom [u8], nom::error::VerboseError<&'nom [u8]>>>(

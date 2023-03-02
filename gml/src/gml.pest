@@ -17,19 +17,30 @@ stmt              = _{ if_stmt
                      | assign_stmt
                      | expr_stmt
                      | empty_stmt }
-  if_stmt         = { "if" ~ expr ~ stmt ~ ("else" ~ stmt)? }
-  repeat_stmt     = { "repeat" ~ expr ~ stmt }
-  while_stmt      = { "while" ~ expr ~ stmt }
-  for_stmt        = { "for" ~ "(" ~ assign_expr ~ ";" ~
+  if_stmt         = { kw_if ~ expr ~ stmt
+                    ~ (kw_else ~ kw_if ~ expr ~ stmt)* // flatten long else-if chains
+                    ~ (kw_else ~ stmt)? }
+    kw_if         = @{ "if" ~ !id_cont }
+    kw_else       = @{ "else" ~ !id_cont }
+  repeat_stmt     = { kw_repeat ~ expr ~ stmt }
+    kw_repeat     = @{ "repeat" ~ !id_cont }
+  while_stmt      = { kw_while ~ expr ~ stmt }
+    kw_while      = @{ "while" ~ !id_cont }
+  for_stmt        = { kw_for ~ "(" ~ assign_expr ~ ";" ~
                       expr ~ ";" ~ (assign_expr | expr) ~ ")" ~ stmt }
-  with_stmt       = { "with" ~ expr ~ stmt }
-  return_stmt     = { "return" ~ expr ~ sep }
-  exit_stmt       = { "exit" ~ sep }
+    kw_for        = @{ "for" ~ !id_cont }
+  with_stmt       = { kw_with ~ expr ~ stmt }
+    kw_with       = @{ "with" ~ !id_cont }
+  return_stmt     = { kw_return ~ expr ~ sep }
+    kw_return     = @{ "return" ~ !id_cont }
+  exit_stmt       = { kw_exit ~ sep }
+    kw_exit       = @{ "exit" ~ !id_cont }
   block_stmt      = { "{" ~ stmt* ~ "}" }
-  var_stmt        = { "var" ~ id ~ sep }
+  var_stmt        = { kw_var ~ id ~ sep }
+    kw_var        = @{ "var" ~ !id_cont }
   assign_stmt     = { assign_expr ~ sep }
   expr_stmt       = { expr ~ sep }
-  empty_stmt      = _{ ";" } // can't use sep or it would match empty
+  empty_stmt      = { ";" } // can't use sep or it would match empty
 
 sep               = _{ ";"? }
 
@@ -56,8 +67,8 @@ expr          = { prefix* ~ primary ~ postfix* ~ (infix ~ prefix* ~ primary ~ po
                  | bit_and | bit_or | bit_xor
                  | le | lt | ge | gt | ne | eq
                  | add | sub | mul | div | idiv | imod }
-    and       = @{ "&&" | "and" }
-    or        = @{ "||" | "or" }
+    and       = @{ "&&" | "and" ~ !id_cont }
+    or        = @{ "||" | "or" ~ !id_cont }
     xor       = @{ "^^" }
     bit_and   = @{ "&" }
     bit_or    = @{ "|" }
@@ -72,8 +83,8 @@ expr          = { prefix* ~ primary ~ postfix* ~ (infix ~ prefix* ~ primary ~ po
     sub       = @{ "-" }
     mul       = @{ "*" }
     div       = @{ "/" }
-    idiv      = @{ "div" }
-    imod      = @{ "%" | "mod" }
+    idiv      = @{ "div" ~ !id_cont }
+    imod      = @{ "%" | "mod" ~ !id_cont }
   postfix     = _{ member | index | post_incr | post_decr }
     member    = { "." ~ id }
     index     = { "[" ~ expr_list ~ "]" }
@@ -82,7 +93,7 @@ expr          = { prefix* ~ primary ~ postfix* ~ (infix ~ prefix* ~ primary ~ po
 primary = _{ "(" ~ expr ~ ")" | call_expr | var | float | int | str }
 
 var = { (global ~ "." )? ~ id }
-  global = @{ "global" }
+  global = @{ "global" ~ !id_cont }
 
 call_expr = { id ~ "(" ~ expr_list? ~ ")" }
 expr_list = _{ expr ~ ("," ~ expr)* }
@@ -93,7 +104,8 @@ token = { keyword | id | float | int | str | op }
 keyword = @{ ("if" | "else" | "for" | "repeat" | "with" | "var" | "global"
              | "do" | "until" | "switch" | "break" | "continue" | "exit"
              | "begin" | "end"
-             | "try" | "catch" | "finally" | "throw" | "new" | "delete"
+// not yet supported in GM 7, breaks a few scripts that use try as a variable name.
+//              | "try" | "catch" | "finally" | "throw" | "new" | "delete"
              | "and" | "or" | "div" | "mod" | "return")
            ~ !ASCII_ALPHANUMERIC
            }
@@ -103,7 +115,8 @@ op = @{ "&&" | "&" | "||" | "|" | "^^" | "^"
       | "==" | "=" | "!=" | "!"
       | ";" | "." | ","
       | "(" | ")" | "{" | "}" | "[" | "]" }
-id = @{ !keyword ~ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+id = @{ !keyword ~ ("_" | ASCII_ALPHA) ~ id_cont* }
+id_cont = @{ "_" | ASCII_ALPHANUMERIC }
 float = @{ ASCII_DIGIT* ~ "." ~ ASCII_DIGIT+ }
 int = @{ ASCII_DIGIT+ }
 str = @{ "\"" ~ (!"\"" ~ ANY | "\\\"")* ~ "\"" }

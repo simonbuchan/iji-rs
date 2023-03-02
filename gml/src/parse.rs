@@ -66,29 +66,55 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
     match pair.as_rule() {
         Rule::if_stmt => {
             let mut inner = pair.into_inner();
+            // initially
+            //    kw_if expr stmt (kw_else stmt)*
+            // but that can overflow the stack, so it's flattened to:
+            //    kw_if expr stmt (kw_else kw_if expr stmt)* (kw_else stmt)
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_if);
             let cond = parse_expr(inner.next().unwrap());
-            let stmt = parse_stmt(inner.next().unwrap());
-            let alt = inner.next().map(parse_stmt);
-            Box::new(Stmt::If {
-                cond,
-                body: stmt,
-                alt,
-            })
+            let body = parse_stmt(inner.next().unwrap());
+            let mut alt = None;
+            let mut alts = vec![];
+            // Now we should always be on an else...
+            while let Some(kw) = inner.next() {
+                assert_eq!(kw.as_rule(), Rule::kw_else);
+                let next = inner.next().unwrap();
+                // but if it's followed by another if...
+                if next.as_rule() == Rule::kw_if {
+                    // we push the left-hand onto a stack...
+                    let cond = parse_expr(inner.next().unwrap());
+                    let body = parse_stmt(inner.next().unwrap());
+                    alts.push((cond, body));
+                } else {
+                    // and otherwise we're done and have the right hand...
+                    alt = Some(parse_stmt(next));
+                    assert!(inner.next().is_none());
+                }
+            }
+            // now, build up else-ifs from the right...
+            while let Some((cond, body)) = alts.pop() {
+                alt = Some(Box::new(Stmt::If { cond, body, alt }));
+            }
+            // so now alt is the left-most else body, if any.
+            Box::new(Stmt::If { cond, body, alt })
         }
         Rule::repeat_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_repeat);
             let count = parse_expr(inner.next().unwrap());
             let stmt = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::Repeat { count, body: stmt })
         }
         Rule::while_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_while);
             let cond = parse_expr(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::While { cond, body })
         }
         Rule::for_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_for);
             let assign = parse_assign(inner.next().unwrap());
             let cond = parse_expr(inner.next().unwrap());
             let update = parse_assign(inner.next().unwrap());
@@ -102,12 +128,14 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
         }
         Rule::with_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_with);
             let obj = parse_expr(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::With { obj, body })
         }
         Rule::return_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_return);
             let expr = parse_expr(inner.next().unwrap());
             Box::new(Stmt::Return { expr })
         }
@@ -119,6 +147,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
         }
         Rule::var_stmt => {
             let mut inner = pair.into_inner();
+            assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_var);
             let id = inner.next().unwrap().as_str().into();
             Box::new(Stmt::Var(id))
         }
@@ -198,6 +227,7 @@ fn parse_expr(pair: Pair<'_, Rule>) -> Box<Expr> {
 }
 
 fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> {
+    assert_eq!(pair.as_rule(), Rule::expr);
     pratt
         .map_primary(|primary| {
             match primary.as_rule() {
@@ -207,7 +237,11 @@ fn parse_expr_rec(pair: Pair<'_, Rule>, pratt: &PrattParser<Rule>) -> Box<Expr> 
                     let mut inner = primary.into_inner();
                     let id = inner.next().unwrap().as_str().into();
                     let args = inner.map(|pair| parse_expr_rec(pair, pratt)).collect();
-                    Box::new(Expr::Call { pos, id, args })
+                    Box::new(Expr::Call {
+                        pos,
+                        name: id,
+                        args,
+                    })
                 }
                 Rule::var => Box::new(Expr::Var(parse_var(primary))),
                 Rule::int => Box::new(Expr::Int(primary.as_str().parse().unwrap())),

@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 #[allow(unused_variables)]
 pub trait Visitor {
     fn stmt(&mut self, value: &Stmt) -> bool {
@@ -30,6 +32,12 @@ impl Script {
 pub struct Pos {
     pub line: usize,
     pub column: usize,
+}
+
+impl Display for Pos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
 }
 
 impl From<(usize, usize)> for Pos {
@@ -139,6 +147,41 @@ impl Stmt {
     }
 }
 
+impl Display for Expr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Var(var) => write!(f, "{var}"),
+            Expr::Int(value) => write!(f, "{value}"),
+            Expr::Float(value) => write!(f, "{value}"),
+            Expr::String(value) => write!(f, "{value:?}"),
+            Expr::Unary { op, expr } => write!(f, "{op}({expr})"),
+            Expr::Binary { lhs, op, rhs } => write!(f, "({lhs}) {op} ({rhs})"),
+            Expr::Member { lhs, name } => write!(f, "{lhs}.{name}"),
+            Expr::Index { lhs, indices } => write!(f, "{lhs}[{}]", CommaSep(&indices)),
+            Expr::Call { pos: _, name, args } => write!(f, "{name}({})", CommaSep(&args)),
+        }
+    }
+}
+
+struct CommaSep<'a, I>(&'a I);
+
+impl<'a, I, T> Display for CommaSep<'a, I>
+where
+    I: IntoIterator<Item = &'a T> + Copy,
+    T: Display + 'a,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut it = self.0.into_iter();
+        if let Some(item) = it.next() {
+            item.fmt(f)?;
+            for item in it {
+                write!(f, ", {item}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Assign {
     pub lhs: Box<Expr>,
@@ -156,10 +199,25 @@ impl Assign {
     }
 }
 
+impl Display for Assign {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} {}", self.lhs, self.op, self.rhs)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Var {
     Local(String),
     Global(String),
+}
+
+impl Display for Var {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Var::Local(name) => f.write_str(name),
+            Var::Global(name) => write!(f, "global.{name}"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -169,6 +227,18 @@ pub enum AssignOp {
     SubAssign,
     MulAssign,
     DivAssign,
+}
+
+impl Display for AssignOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AssignOp::Assign => "=",
+            AssignOp::AddAssign => "+=",
+            AssignOp::SubAssign => "-=",
+            AssignOp::MulAssign => "*=",
+            AssignOp::DivAssign => "/=",
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -196,7 +266,7 @@ pub enum Expr {
     },
     Call {
         pos: Pos,
-        id: String,
+        name: String,
         args: Vec<Box<Expr>>,
     },
 }
@@ -248,6 +318,21 @@ pub enum UnaryOp {
     PostDecr,
 }
 
+impl Display for UnaryOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnaryOp::Not => f.write_str("!"),
+            UnaryOp::Pos => f.write_str("+"),
+            UnaryOp::Neg => f.write_str("-"),
+            UnaryOp::BitNot => f.write_str("~"),
+            UnaryOp::PreIncr => f.write_str("++"),
+            UnaryOp::PreDecr => f.write_str("--"),
+            UnaryOp::PostIncr => todo!(),
+            UnaryOp::PostDecr => todo!(),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum BinaryOp {
     And,
@@ -268,4 +353,29 @@ pub enum BinaryOp {
     Div,
     IDiv,
     IMod,
+}
+
+impl Display for BinaryOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BinaryOp::And => "&&",
+            BinaryOp::Or => "||",
+            BinaryOp::Xor => "^^",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::Le => "<=",
+            BinaryOp::Lt => "<",
+            BinaryOp::Ge => ">=",
+            BinaryOp::Gt => ">",
+            BinaryOp::Ne => "!=",
+            BinaryOp::Eq => "==",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::IDiv => "div",
+            BinaryOp::IMod => "mod",
+        })
+    }
 }

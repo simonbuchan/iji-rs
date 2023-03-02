@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -19,10 +20,18 @@ pub enum Error {
     AssignToValue,
     #[error("function {0:?} has no definition")]
     UndefinedFunction(String),
-    #[error("invalid object id {0:?}")]
+    #[error("invalid bool {0}")]
+    InvalidOperands(Value, Value),
+    #[error("invalid bool {0}")]
+    InvalidBool(Value),
+    #[error("invalid int {0}")]
+    InvalidInt(Value),
+    #[error("invalid float {0}")]
+    InvalidFloat(Value),
+    #[error("invalid string {0:?}")]
+    InvalidString(Value),
+    #[error("invalid object id {0}")]
     InvalidObject(Value),
-    #[error("invalid object id {0:?}")]
-    InvalidId(i32),
     #[error("accessing property {name:?} on invalid place {place:?}")]
     UndefinedProperty { place: Place, name: String },
     #[error("invalid repeat count {0:?}")]
@@ -105,6 +114,14 @@ impl Value {
         }
     }
 
+    pub fn as_object_id(&self) -> Option<ObjectId> {
+        if let Self::Int(value) = self {
+            Some(ObjectId(*value))
+        } else {
+            None
+        }
+    }
+
     pub fn to_bool(&self) -> bool {
         match self {
             Self::Undefined => false,
@@ -143,13 +160,6 @@ impl Value {
             Self::Float(value) => value.to_string(),
             Self::String(value) => value.clone(),
         }
-    }
-
-    pub fn to_id(&self) -> Result<ObjectId> {
-        self.as_int()
-            .and_then(|value| value.try_into().ok())
-            .map(ObjectId)
-            .ok_or(Error::InvalidObject(self.clone()))
     }
 }
 
@@ -191,7 +201,78 @@ impl From<String> for Value {
 
 impl From<ObjectId> for Value {
     fn from(value: ObjectId) -> Self {
-        Self::Int(value.0 as i32)
+        Self::Int(value.0)
+    }
+}
+
+impl std::ops::Add for Value {
+    type Output = Result<Value>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Ok((lhs + rhs).into()),
+            (lhs, Self::String(value)) => Ok((lhs.to_str() + &value).into()),
+            (lhs @ Self::String(_), rhs) => Err(Error::InvalidOperands(lhs, rhs)),
+            (lhs, rhs) => Ok((lhs.to_float() + rhs.to_float()).into()),
+        }
+    }
+}
+
+impl std::ops::Sub for Value {
+    type Output = Result<Value>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Ok((lhs - rhs).into()),
+            (lhs, rhs @ Self::String(_)) | (lhs @ Self::String(_), rhs) => {
+                Err(Error::InvalidOperands(lhs, rhs))
+            }
+            (lhs, rhs) => Ok((lhs.to_float() - rhs.to_float()).into()),
+        }
+    }
+}
+
+impl std::ops::Mul for Value {
+    type Output = Result<Value>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Ok((lhs * rhs).into()),
+            (lhs @ Self::Int(_) | lhs @ Self::Float(_), Self::String(rhs)) => {
+                let count = lhs.to_int().try_into().unwrap_or_default();
+                Ok(rhs.repeat(count).into())
+            }
+            (lhs @ Self::String(_), rhs) => Err(Error::InvalidOperands(lhs, rhs)),
+            (lhs, rhs) => Ok((lhs.to_float() * rhs.to_float()).into()),
+        }
+    }
+}
+
+impl std::ops::Div for Value {
+    type Output = Result<Value>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Ok((lhs / rhs).into()),
+            (lhs @ Self::String(_), rhs) | (lhs, rhs @ Self::String(_)) => {
+                Err(Error::InvalidOperands(lhs, rhs))
+            }
+            (lhs, rhs) => Ok((lhs.to_float() / rhs.to_float()).into()),
+        }
+    }
+}
+
+impl std::ops::Rem for Value {
+    type Output = Result<Value>;
+
+    fn rem(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Ok((lhs % rhs).into()),
+            (lhs @ Self::String(_), rhs) | (lhs, rhs @ Self::String(_)) => {
+                Err(Error::InvalidOperands(lhs, rhs))
+            }
+            (lhs, rhs) => Ok((lhs.to_float() % rhs.to_float()).into()),
+        }
     }
 }
 
@@ -209,6 +290,14 @@ pub struct ObjectId(i32);
 impl ObjectId {
     const GLOBAL: Self = Self(0);
     const LOCAL: Self = Self(-1);
+
+    pub fn new(id: u32) -> Self {
+        Self(id.try_into().expect("invalid object id"))
+    }
+
+    pub fn instance_id(&self) -> u32 {
+        self.0.try_into().expect("not an instance object id")
+    }
 }
 
 impl std::fmt::Debug for ObjectId {
@@ -224,197 +313,159 @@ impl std::fmt::Debug for ObjectId {
 }
 
 #[allow(unused_variables)]
+pub trait Global: 'static {
+    fn get(&self, name: &str) -> Result<Option<Value>>;
+
+    fn set(&self, name: &str, value: Value) -> Result;
+
+    fn instance(&self, id: ObjectId) -> Option<Rc<dyn Object>>;
+
+    fn new_instance(&self, object: Rc<dyn Object>) -> ObjectId;
+
+    fn call(&self, context: &mut Context<'_>, id: &str, args: Vec<Value>) -> Result<Value>;
+}
+
+#[allow(unused_variables)]
 pub trait Object: 'static {
-    fn member(&self, name: &str) -> Result<Option<&Value>> {
+    fn member(&self, name: &str) -> Result<Option<Value>> {
         Ok(None)
     }
 
-    fn set_member(&mut self, name: &str, value: Value) -> Result {
+    fn set_member(&self, name: &str, value: Value) -> Result {
         Ok(())
     }
 
-    fn index(&self, args: &[Value]) -> Result<Option<&Value>> {
+    fn index(&self, args: &[Value]) -> Result<Option<Value>> {
         Ok(None)
     }
 
-    fn set_index(&mut self, args: &[Value], value: Value) -> Result {
+    fn set_index(&self, args: &[Value], value: Value) -> Result {
         Ok(())
     }
 }
 
 #[derive(Default)]
 pub struct Namespace {
-    pub vars: HashMap<String, Value>,
+    vars: RefCell<HashMap<String, Value>>,
 }
 
 impl Object for Namespace {
-    fn member(&self, name: &str) -> Result<Option<&Value>> {
-        Ok(self.vars.get(name))
+    fn member(&self, name: &str) -> Result<Option<Value>> {
+        Ok(self.vars.borrow().get(name).cloned())
     }
 
-    fn set_member(&mut self, name: &str, value: Value) -> Result {
-        self.vars.insert(name.into(), value);
+    fn set_member(&self, name: &str, value: Value) -> Result {
+        self.vars.borrow_mut().insert(name.into(), value);
         Ok(())
     }
 }
 
 #[derive(Default)]
 pub struct Array {
-    pub items: Vec<Value>,
+    items: RefCell<Vec<Value>>,
 }
 
 impl Object for Array {
-    fn index(&self, args: &[Value]) -> Result<Option<&Value>> {
+    fn index(&self, args: &[Value]) -> Result<Option<Value>> {
         let index = args.get(0).cloned().unwrap_or_default().to_int();
-        let value = index
+        Ok(index
             .try_into()
             .ok()
-            .and_then(|index: usize| self.items.get(index));
-        Ok(value)
+            .and_then(|index: usize| self.items.borrow().get(index).cloned()))
     }
 
-    fn set_index(&mut self, args: &[Value], value: Value) -> Result {
+    fn set_index(&self, args: &[Value], value: Value) -> Result {
         let Ok(index) = args.get(0).cloned().unwrap_or_default().to_int().try_into() else {
             return Ok(())
         };
+        let mut items = self.items.borrow_mut();
 
-        if self.items.len() <= index {
-            self.items.resize(index + 1, Value::Undefined);
+        if items.len() <= index {
+            items.resize(index + 1, Value::Undefined);
         }
-        self.items[index] = value;
+        items[index] = value;
         Ok(())
     }
 }
 
-type FunctionImpl<Global> = dyn Fn(&mut Context<Global>, Vec<Value>) -> Result<Value>;
+type FunctionImpl = dyn Fn(&mut Context, Vec<Value>) -> Result<Value>;
 
-pub struct Function<Global>(Rc<FunctionImpl<Global>>);
+pub struct Function(Rc<FunctionImpl>);
 
-impl<Global> Function<Global> {
-    pub fn new(f: impl Fn(&mut Context<Global>, Vec<Value>) -> Result<Value> + 'static) -> Self {
+impl Function {
+    pub fn new(f: impl Fn(&mut Context, Vec<Value>) -> Result<Value> + 'static) -> Self {
         Self(Rc::new(f))
     }
 }
 
-impl<Global> Clone for Function<Global> {
+impl Clone for Function {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub struct Context<Global = Namespace> {
-    global: Global,
-    local: Namespace,
-    instances: HashMap<i32, Box<dyn Object>>,
-    last_instance_id: i32,
-    instance: ObjectId,
-    fns: HashMap<String, Function<Global>>,
+pub struct Context<'a> {
+    pub global: &'a dyn Global,
+    pub instance_id: ObjectId,
+    pub instance: Rc<dyn Object>,
+    pub locals: Namespace,
 }
 
-impl<Global: Object + Default> Default for Context<Global> {
-    fn default() -> Self {
-        Self::new(Global::default())
-    }
-}
-
-impl<Global: Object> Context<Global> {
-    pub fn new(global: Global) -> Self {
+impl<'a> Context<'a> {
+    pub fn new(global: &'a dyn Global, instance_id: ObjectId, instance: Rc<dyn Object>) -> Self {
         Self {
             global,
-            local: Namespace::default(),
-            instances: Default::default(),
-            last_instance_id: 0,
-            instance: ObjectId::GLOBAL,
-            fns: Default::default(),
+            instance_id,
+            instance,
+            locals: Namespace::default(),
         }
     }
 
-    pub fn def_fn(
-        &mut self,
-        name: impl Into<String>,
-        f: impl Fn(&mut Self, Vec<Value>) -> Result<Value> + 'static,
-    ) {
-        self.fns.insert(name.into(), Function::new(f));
+    fn instance(&self, id: ObjectId) -> Result<Rc<dyn Object>> {
+        self.global
+            .instance(id)
+            .ok_or(Error::InvalidObject(id.into()))
     }
 
-    pub fn new_instance(&mut self, value: Option<Box<dyn Object>>) -> ObjectId {
-        self.last_instance_id += 1;
-        let id = self.last_instance_id;
-        self.instances
-            .insert(id, value.unwrap_or_else(|| Box::<Namespace>::default()));
-        ObjectId(id)
-    }
-
-    pub fn global(&self) -> &Global {
-        &self.global
-    }
-
-    pub fn global_mut(&mut self) -> &mut Global {
-        &mut self.global
-    }
-
-    fn instance(&self) -> &dyn Object {
-        self.object(self.instance).unwrap()
-    }
-
-    fn instance_mut(&mut self) -> &mut dyn Object {
-        self.object_mut(self.instance).unwrap()
-    }
-
-    fn local(&self) -> &Namespace {
-        &self.local
-    }
-
-    fn local_mut(&mut self) -> &mut Namespace {
-        &mut self.local
-    }
-
-    fn object(&self, id: ObjectId) -> Result<&dyn Object> {
+    pub fn get(&self, id: ObjectId, name: &str) -> Result<Option<Value>> {
         match id {
-            ObjectId::GLOBAL => Ok(&self.global),
-            ObjectId::LOCAL => Ok(&self.local),
-            ObjectId(id) => self
-                .instances
-                .get(&id)
-                .map(|b| &**b)
-                .ok_or(Error::InvalidId(id)),
+            ObjectId::GLOBAL => Ok(self.global.get(name)?),
+            ObjectId::LOCAL => Ok(self.locals.member(name)?),
+            id => Ok(self.instance(id)?.member(name)?),
         }
     }
 
-    fn object_mut(&mut self, id: ObjectId) -> Result<&mut dyn Object> {
+    pub fn set(&mut self, id: ObjectId, name: &str, value: Value) -> Result {
         match id {
-            ObjectId::GLOBAL => Ok(&mut self.global),
-            ObjectId::LOCAL => Ok(&mut self.local),
-            ObjectId(id) => self
-                .instances
-                .get_mut(&id)
-                .map(|b| &mut **b)
-                .ok_or(Error::InvalidId(id)),
+            ObjectId::GLOBAL => {
+                self.global.set(name, value)?;
+            }
+            ObjectId::LOCAL => {
+                self.locals.set_member(name, value)?;
+            }
+            id => {
+                self.instance(id)?.set_member(name, value)?;
+            }
         }
+        Ok(())
     }
 
-    pub fn var(&self, var: &ast::Var) -> Result<Value> {
+    pub fn var(&mut self, var: &ast::Var) -> Result<Value> {
         // Local tries script locals, then active instance, then global.
         // Global only tries global.
         match var {
-            ast::Var::Global(id) => {
-                let value = self.global().member(id)?.cloned();
-                if value.is_none() {
-                    println!("note: reading undefined global: {id}");
-                }
-                Ok(value.unwrap_or_default())
-            }
+            ast::Var::Global(id) => Ok(self.global.get(id)?.unwrap_or_default()),
             ast::Var::Local(id) => {
-                if let Some(value) = self.local().member(id)? {
+                if let Some(value) = self.locals.member(id)? {
                     return Ok(value.clone());
                 }
-                if let Some(value) = self.instance().member(id)? {
+                if let Some(value) = self.instance.member(id)? {
                     return Ok(value.clone());
                 }
-                if let Some(value) = self.global().member(id)? {
-                    return Ok(value.clone());
+                if let Some(value) = self.global.get(id)? {
+                    return Ok(value);
                 }
-                println!("note: reading undefined local: {id}");
+                // println!("note: reading undefined local: {id}");
                 Ok(Value::Undefined)
             }
         }
@@ -425,49 +476,46 @@ impl<Global: Object> Context<Global> {
         // It will not fall back to a global.
         match var {
             ast::Var::Global(id) => {
-                self.global_mut().set_member(id, value)?;
+                self.global.set(id, value)?;
             }
             ast::Var::Local(id) => {
-                if let Some(value_ref) = self.local.vars.get_mut(id) {
-                    *value_ref = value;
+                if let Some(_) = self.locals.member(id)? {
+                    self.locals.set_member(id, value)?;
                 } else {
-                    self.instance_mut().set_member(id, value)?;
+                    self.instance.set_member(id, value)?;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn with_instance<R>(
-        &mut self,
-        instance: ObjectId,
-        body: impl FnOnce(&mut Self) -> Result<R>,
-    ) -> Result<R> {
-        if !self.instances.contains_key(&instance.0) {
-            return Err(Error::InvalidId(instance.0));
-        }
-
-        let old = std::mem::replace(&mut self.instance, instance);
-        let res = body(self);
-        self.instance = old;
-        res
-    }
-
-    fn place_value(&self, place: &Place) -> Result<Value> {
+    fn place_value(&mut self, place: &Place) -> Result<Value> {
         match place {
             Place::Value(value) => Ok(value.clone()),
             Place::Var(var) => self.var(var),
             Place::Property(id, name) => {
-                let object = self.object(*id)?;
-                Ok(object.member(name)?.cloned().unwrap_or_default())
+                let object = self.get(*id, name)?;
+                Ok(object.unwrap_or_default())
             }
             Place::Index(lhs, indices) => {
                 let lhs = self.place_value(lhs)?;
-                if matches!(lhs, Value::Undefined) {
-                    return Ok(Value::Undefined);
+                match lhs {
+                    Value::Undefined => Ok(Value::Undefined),
+                    Value::Int(lhs_id) => {
+                        // lhs cannot be LOCAL or GLOBAL
+                        let lhs = self.instance(ObjectId(lhs_id))?;
+                        Ok(lhs.index(indices)?.unwrap_or_default())
+                    }
+                    Value::String(value) => {
+                        let index = 0
+                            .max(indices[0].to_int() - 1)
+                            .try_into()
+                            .unwrap_or_default();
+                        let value = value.get(index..).unwrap_or_default();
+                        Ok(value.to_string().into())
+                    }
+                    lhs => Err(Error::InvalidObject(lhs)),
                 }
-                let lhs = self.object(lhs.to_id()?)?;
-                Ok(lhs.index(indices)?.cloned().unwrap_or_default())
             }
         }
     }
@@ -479,26 +527,33 @@ impl<Global: Object> Context<Global> {
                 self.set_var(var, value)?;
             }
             Place::Property(id, name) => {
-                self.object_mut(*id)?.set_member(name, value)?;
+                self.set(*id, name, value)?;
             }
             Place::Index(lhs_place, indices) => {
                 // need to be careful here, in `foo[123] = bar`
                 // foo may not be defined.
-                let mut lhs = self.place_value(lhs_place)?;
-                if matches!(lhs, Value::Undefined) {
-                    let array = self.new_instance(Some(Box::<Array>::default()));
-                    lhs = array.into();
-                    self.set_place(lhs_place, lhs.clone())?;
-                }
-                let lhs = self.object_mut(lhs.to_id()?)?;
+                let lhs_value = self.place_value(lhs_place)?;
+                let lhs_id = if matches!(lhs_value, Value::Undefined) {
+                    let id = self.global.new_instance(Rc::<Array>::default());
+                    self.set_place(lhs_place, id.0.into())?;
+                    id
+                } else {
+                    ObjectId(lhs_value.as_int().ok_or(Error::InvalidObject(lhs_value))?)
+                };
+                // lhs_id cannot be LOCAL or GLOBAL
+                let lhs = self.instance(lhs_id)?;
                 lhs.set_index(indices, value)?;
             }
         }
         Ok(())
     }
 
-    pub fn exec_script(&mut self, script: &ast::Script) -> Result<Value> {
-        let old_locals = std::mem::take(self.local_mut());
+    pub fn exec_script(&mut self, script: &ast::Script, arguments: &[Value]) -> Result<Value> {
+        let old_locals = std::mem::take(&mut self.locals);
+        for (index, value) in arguments.into_iter().enumerate() {
+            self.locals
+                .set_member(&format!("argument{index}"), value.clone())?;
+        }
         for stmt in &script.stmts {
             match self.exec(stmt) {
                 Err(Error::Exit) => break,
@@ -506,7 +561,7 @@ impl<Global: Object> Context<Global> {
                 result => result.with_script_name(script.name.clone()),
             }?;
         }
-        *self.local_mut() = old_locals;
+        self.locals = old_locals;
         Ok(Value::Undefined)
     }
 
@@ -516,7 +571,8 @@ impl<Global: Object> Context<Global> {
                 self.eval(expr).with_position(*pos)?;
             }
             ast::Stmt::Var(id) => {
-                self.local_mut().vars.insert(id.clone(), ().into());
+                // var foo; ensures there is an entry in locals, so later references use it.
+                self.locals.set_member(id, ().into())?;
             }
             ast::Stmt::Assign { pos, assign } => {
                 self.exec_assign(assign).with_position(*pos)?;
@@ -558,8 +614,15 @@ impl<Global: Object> Context<Global> {
             ast::Stmt::With { obj, body } => {
                 // todo: obj can be a *set* of objects, which this then loops over.
                 //       this is used by Iji at least in the scr_firekey "null driver" weapon.
-                let obj = self.eval(obj)?.to_id()?;
-                self.with_instance(obj, |ctx| ctx.exec(body))?;
+                let value = self.eval(obj)?;
+                let id = value.as_object_id().ok_or(Error::InvalidObject(value))?;
+                let new_instance = self.instance(id)?;
+                let old_instance_id = std::mem::replace(&mut self.instance_id, id);
+                let old_instance = std::mem::replace(&mut self.instance, new_instance);
+                let result = self.exec(body);
+                self.instance = old_instance;
+                self.instance_id = old_instance_id;
+                result?;
             }
             ast::Stmt::Return { expr } => {
                 let value = self.eval(expr)?;
@@ -585,11 +648,10 @@ impl<Global: Object> Context<Global> {
                 let lhs = self.place_value(&lhs_place)?;
                 match op {
                     ast::AssignOp::Assign => unreachable!(),
-                    // todo: Float, String, ...
-                    ast::AssignOp::AddAssign => (lhs.to_int() + rhs.to_int()).into(),
-                    ast::AssignOp::SubAssign => (lhs.to_int() - rhs.to_int()).into(),
-                    ast::AssignOp::MulAssign => (lhs.to_int() * rhs.to_int()).into(),
-                    ast::AssignOp::DivAssign => (lhs.to_int() / rhs.to_int()).into(),
+                    ast::AssignOp::AddAssign => (lhs + rhs)?,
+                    ast::AssignOp::SubAssign => (lhs - rhs)?,
+                    ast::AssignOp::MulAssign => (lhs * rhs)?,
+                    ast::AssignOp::DivAssign => (lhs / rhs)?,
                 }
             }
         };
@@ -636,21 +698,20 @@ impl<Global: Object> Context<Global> {
                     ast::BinaryOp::Lt => (lhs < rhs).into(),
                     ast::BinaryOp::Ge => (lhs >= rhs).into(),
                     ast::BinaryOp::Gt => (lhs > rhs).into(),
-                    // todo: coerce (e.g. "0" == 0)?
                     ast::BinaryOp::Ne => (lhs != rhs).into(),
                     ast::BinaryOp::Eq => (lhs == rhs).into(),
-                    // todo: float, string?
-                    ast::BinaryOp::Add => (lhs.to_int() + rhs.to_int()).into(),
-                    ast::BinaryOp::Sub => (lhs.to_int() - rhs.to_int()).into(),
-                    ast::BinaryOp::Mul => (lhs.to_int() * rhs.to_int()).into(),
-                    ast::BinaryOp::Div => (lhs.to_int() / rhs.to_int()).into(),
+                    ast::BinaryOp::Add => (lhs + rhs)?,
+                    ast::BinaryOp::Sub => (lhs - rhs)?,
+                    ast::BinaryOp::Mul => (lhs * rhs)?,
+                    ast::BinaryOp::Div => (lhs / rhs)?,
                     ast::BinaryOp::IDiv => (lhs.to_int() / rhs.to_int()).into(),
-                    ast::BinaryOp::IMod => (lhs.to_int() % rhs.to_int()).into(),
+                    ast::BinaryOp::IMod => (lhs % rhs)?,
                 };
                 Ok(Place::Value(value))
             }
             ast::Expr::Member { lhs, name } => {
-                let id = self.eval(lhs)?.to_id()?;
+                let value = self.eval(lhs)?;
+                let id = value.as_object_id().ok_or(Error::InvalidObject(value))?;
                 Ok(Place::Property(id, name.clone()))
             }
             ast::Expr::Index { lhs, indices } => {
@@ -661,19 +722,19 @@ impl<Global: Object> Context<Global> {
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Place::Index(lhs, indices))
             }
-            ast::Expr::Call { pos, id, args } => {
+            ast::Expr::Call {
+                pos,
+                name: id,
+                args,
+            } => {
                 // println!("{line}:{column}: {id}()");
-                let f = self
-                    .fns
-                    .get(id)
-                    .ok_or(Error::UndefinedFunction(id.clone()))?
-                    .clone();
                 let args = args
                     .iter()
                     .map(|arg| self.eval(arg))
                     .collect::<Result<Vec<_>>>()
                     .with_position(*pos)?;
-                Ok(Place::Value((f.0)(self, args).with_position(*pos)?))
+                let result = self.global.call(self, id, args).with_position(*pos)?;
+                Ok(Place::Value(result))
             }
         }
     }
