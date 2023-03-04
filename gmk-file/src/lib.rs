@@ -8,9 +8,9 @@ use std::ops::Deref;
 use nom::bytes::complete::take;
 use nom::combinator::flat_map;
 use nom::error::ParseError;
-use nom::number::complete::le_u32;
+use nom::number::complete::{le_i32, le_u32};
 use nom_derive::{NomLE, Parse};
-use num_enum::TryFromPrimitive;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 pub use settings::*;
 
@@ -198,35 +198,44 @@ impl<T> std::ops::Index<u32> for ResourceChunk<T> {
 }
 
 impl<'a, T> IntoIterator for &'a ResourceChunk<T> {
-    type Item = (&'a str, &'a T);
+    type Item = (u32, &'a str, &'a T);
     type IntoIter = ResourceChunkIter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        ResourceChunkIter(self.items.iter().flatten())
+        ResourceChunkIter {
+            id: 0,
+            iter: self.items.iter(),
+        }
     }
 }
 
-pub struct ResourceChunkIter<'a, T>(
-    std::iter::Flatten<std::slice::Iter<'a, Option<ResourceItem<T>>>>,
-);
+pub struct ResourceChunkIter<'a, T> {
+    id: u32,
+    iter: std::slice::Iter<'a, Option<ResourceItem<T>>>,
+}
 
 impl<'a, T> Iterator for ResourceChunkIter<'a, T> {
-    type Item = (&'a str, &'a T);
+    type Item = (u32, &'a str, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let i = self.0.next()?;
-        Some((&i.name.0, &i.data))
+        loop {
+            let id = self.id;
+            self.id += 1;
+            if let Some(i) = self.iter.next()? {
+                break Some((id, i.name.0.as_str(), &i.data));
+            }
+        }
     }
 }
 
 impl<T> ResourceChunk<T> {
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &str, &T)> {
         self.into_iter()
     }
 
     pub fn get(&self, item_name: &str) -> Option<&T> {
         self.iter().find_map(
-            |(name, data)| {
+            |(_, name, data)| {
                 if item_name == name {
                     Some(data)
                 } else {
@@ -297,7 +306,7 @@ pub struct Sprite {
     pub use_video_memory: Option<Bool32>,
     #[nom(Cond = "ver == 400")]
     pub on_demand: Option<Bool32>,
-    pub origin: U32x2,
+    pub origin: I32x2,
     #[nom(LengthCount = "le_u32")]
     pub subimages: Vec<ZlibImage>,
 }
@@ -406,13 +415,13 @@ pub struct Object {
 fn parse_events<'nom, E: ParseError<&'nom [u8]>>(
     input: &'nom [u8],
 ) -> nom::IResult<&'nom [u8], BTreeMap<EventId, Event>, E> {
-    let (mut input2, max_event_type) = le_u32(input)?;
+    let (mut input2, max_event_type) = le_i32(input)?;
     let mut result = BTreeMap::new();
 
     for event_type_id in 0..=max_event_type {
         loop {
-            let (input, event_id) = le_u32(input2)?;
-            if event_id == u32::MAX {
+            let (input, event_id) = le_i32(input2)?;
+            if event_id == -1 {
                 input2 = input;
                 break;
             }
@@ -450,20 +459,20 @@ pub enum EventTypeId {
 pub enum EventId {
     Create,              // 0
     Destroy,             // 1
-    Alarm(u32),          // 2
+    Alarm(i32),          // 2
     Step(StepEventId),   // 3
-    Collision(u32),      // 4
-    Keyboard(u32),       // 5
-    Mouse(u32),          // 6
+    Collision(i32),      // 4
+    Keyboard(Key),       // 5
+    Mouse(i32),          // 6
     Other(OtherEventId), // 7
     Draw(DrawEventId),   // 8
-    KeyPress(u32),       // 9
-    KeyRelease(u32),     // 10
-    Trigger(u32),        // 11
+    KeyPress(Key),       // 9
+    KeyRelease(Key),     // 10
+    Trigger(i32),        // 11
 }
 
-impl From<(u32, u32)> for EventId {
-    fn from(value: (u32, u32)) -> Self {
+impl From<(i32, i32)> for EventId {
+    fn from(value: (i32, i32)) -> Self {
         match value {
             (0, 0) => Self::Create,
             (0, id) => panic!("invalid create event id: {id}"),
@@ -472,12 +481,12 @@ impl From<(u32, u32)> for EventId {
             (2, id) => Self::Alarm(id),
             (3, id) => Self::Step(id.try_into().expect("invalid step event id")),
             (4, id) => Self::Collision(id),
-            (5, id) => Self::Keyboard(id),
+            (5, id) => Self::Keyboard(id.try_into().expect("unknown keyboard key")),
             (6, id) => Self::Mouse(id),
             (7, id) => Self::Other(id.try_into().expect("invalid other event id")),
             (8, id) => Self::Draw(id.try_into().expect("invalid draw event id")),
-            (9, id) => Self::KeyPress(id),
-            (10, id) => Self::KeyRelease(id),
+            (9, id) => Self::KeyPress(id.try_into().expect("unknown keypres key")),
+            (10, id) => Self::KeyRelease(id.try_into().expect("unknown keyrelease key")),
             (11, id) => Self::Trigger(id),
             (type_id, _) => panic!("unknown event type id: {type_id}"),
         }
@@ -485,7 +494,7 @@ impl From<(u32, u32)> for EventId {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
-#[repr(u32)]
+#[repr(i32)]
 #[non_exhaustive]
 pub enum StepEventId {
     Normal = 0,
@@ -493,19 +502,111 @@ pub enum StepEventId {
     End = 2,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
-#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive, IntoPrimitive)]
+#[repr(i32)]
 #[non_exhaustive]
-pub enum KeyboardEventId {
+pub enum Key {
+    // KeyboardEventId
     NoKey = 0,
     AnyKey = 1,
-    EnterKey = 2,
-    DeleteKey = 3,
-    InsertKey = 4,
+    // EnterKey = 2,
+    // DeleteKey = 3,
+    // InsertKey = 4,
+
+    // Microsoft VK constants
+    Backspace = 0x08,
+    Tab,
+
+    Enter = 0x0D,
+
+    Shift = 0x10,
+    Control,
+    Alt,
+
+    Escape = 0x1B,
+
+    Space = 0x20,
+    PageUp,
+    PageDown,
+    End,
+    Home,
+    Left,
+    Up,
+    Right,
+    Down,
+
+    Insert = 0x2D,
+    Delete,
+
+    Key0 = 0x30, // '0'
+    Key1,
+    Key2,
+    Key3,
+    Key4,
+    Key5,
+    Key6,
+    Key7,
+    Key8,
+    Key9,
+
+    A = 0x41, // 'A'
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+
+    Numpad0 = 0x60,
+    Numpad1,
+    Numpad2,
+    Numpad3,
+    Numpad4,
+    Numpad5,
+    Numpad6,
+    Numpad7,
+    Numpad8,
+    Numpad9,
+    Multiply,
+    Add,
+    Subtract,
+    Decimal,
+    Divide,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
-#[repr(u32)]
+#[repr(i32)]
 #[non_exhaustive]
 pub enum MouseEventId {
     LeftButton = 0,
@@ -537,7 +638,7 @@ pub enum MouseEventId {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
-#[repr(u32)]
+#[repr(i32)]
 #[non_exhaustive]
 pub enum OtherEventId {
     Outside = 0,
@@ -588,7 +689,7 @@ pub enum OtherEventId {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
-#[repr(u32)]
+#[repr(i32)]
 #[non_exhaustive]
 pub enum DrawEventId {
     Normal = 0,
@@ -979,6 +1080,14 @@ impl std::fmt::Debug for ZlibImage {
     }
 }
 
+impl ZlibImage {
+    pub fn parse(
+        &self,
+    ) -> Option<nom::IResult<&[u8], ImageData<'_>, nom::error::VerboseError<&[u8]>>> {
+        self.data.as_deref().map(ImageData::parse)
+    }
+}
+
 #[repr(u32)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug, NomLE)]
 #[nom(GenericErrors)]
@@ -991,4 +1100,27 @@ impl From<Bool32> for bool {
     fn from(value: Bool32) -> bool {
         value == Bool32::True
     }
+}
+
+#[derive(NomLE)]
+#[nom(GenericErrors)]
+pub struct ImageData<'a> {
+    #[nom(Tag(b"BM"))]
+    _sig: &'a [u8],
+    #[nom(SkipBefore = "8")]
+    _data_offset: u32,
+    #[nom(Verify = "*_header_size >= 40")] // BITMAPCOREHEADER_SIZE uses 16-bit sizes
+    _header_size: u32,
+    pub width: i32,
+    pub height: i32,
+    #[nom(Verify = "*_planes == 1")]
+    _planes: u16,
+    pub bitcount: u16,
+    pub image_type: u32,
+
+    _data_size: u32,
+    /// etc...
+
+    #[nom(MoveAbs = "_data_offset", Take = "_data_size")]
+    pub data: &'a [u8],
 }

@@ -36,6 +36,11 @@ pub fn parse(name: &str, input: &str) -> anyhow::Result<Script> {
     Ok(Script { name, stmts })
 }
 
+pub fn parse_expr(input: &str) -> anyhow::Result<Box<Expr>> {
+    let mut pairs = G::parse(Rule::expr, input)?;
+    Ok(parse_expr_pair(pairs.next().unwrap()))
+}
+
 #[allow(dead_code)]
 pub fn dump_parse(input: &str) -> anyhow::Result<()> {
     let pairs = G::parse(Rule::script, input)?;
@@ -71,7 +76,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
             // but that can overflow the stack, so it's flattened to:
             //    kw_if expr stmt (kw_else kw_if expr stmt)* (kw_else stmt)
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_if);
-            let cond = parse_expr(inner.next().unwrap());
+            let cond = parse_expr_pair(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             let mut alt = None;
             let mut alts = vec![];
@@ -82,7 +87,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
                 // but if it's followed by another if...
                 if next.as_rule() == Rule::kw_if {
                     // we push the left-hand onto a stack...
-                    let cond = parse_expr(inner.next().unwrap());
+                    let cond = parse_expr_pair(inner.next().unwrap());
                     let body = parse_stmt(inner.next().unwrap());
                     alts.push((cond, body));
                 } else {
@@ -101,14 +106,14 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
         Rule::repeat_stmt => {
             let mut inner = pair.into_inner();
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_repeat);
-            let count = parse_expr(inner.next().unwrap());
+            let count = parse_expr_pair(inner.next().unwrap());
             let stmt = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::Repeat { count, body: stmt })
         }
         Rule::while_stmt => {
             let mut inner = pair.into_inner();
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_while);
-            let cond = parse_expr(inner.next().unwrap());
+            let cond = parse_expr_pair(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::While { cond, body })
         }
@@ -116,7 +121,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
             let mut inner = pair.into_inner();
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_for);
             let assign = parse_assign(inner.next().unwrap());
-            let cond = parse_expr(inner.next().unwrap());
+            let cond = parse_expr_pair(inner.next().unwrap());
             let update = parse_assign(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::For {
@@ -129,14 +134,14 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
         Rule::with_stmt => {
             let mut inner = pair.into_inner();
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_with);
-            let obj = parse_expr(inner.next().unwrap());
+            let obj = parse_expr_pair(inner.next().unwrap());
             let body = parse_stmt(inner.next().unwrap());
             Box::new(Stmt::With { obj, body })
         }
         Rule::return_stmt => {
             let mut inner = pair.into_inner();
             assert_eq!(inner.next().unwrap().as_rule(), Rule::kw_return);
-            let expr = parse_expr(inner.next().unwrap());
+            let expr = parse_expr_pair(inner.next().unwrap());
             Box::new(Stmt::Return { expr })
         }
         Rule::exit_stmt => Box::new(Stmt::Exit),
@@ -160,7 +165,7 @@ fn parse_stmt(pair: Pair<'_, Rule>) -> Box<Stmt> {
         Rule::expr_stmt => {
             let pos = Pos::from(pair.line_col());
             let mut inner = pair.into_inner();
-            let expr = parse_expr(inner.next().unwrap());
+            let expr = parse_expr_pair(inner.next().unwrap());
             Box::new(Stmt::Expr { pos, expr })
         }
         Rule::empty_stmt => Box::new(Stmt::Empty),
@@ -185,7 +190,7 @@ fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<Expr> {
         Rule::var => Box::new(Expr::Var(parse_var(id))),
         Rule::assign_id => {
             let mut inner = id.into_inner();
-            return parse_expr(inner.next().unwrap());
+            return parse_expr_pair(inner.next().unwrap());
         }
         _ => unreachable!("bad assign lhs: {id:?}"),
     };
@@ -198,7 +203,7 @@ fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<Expr> {
             }
             Rule::index => {
                 let inner = op.into_inner();
-                let indices = inner.map(parse_expr).collect();
+                let indices = inner.map(parse_expr_pair).collect();
                 lhs = Box::new(Expr::Index { lhs, indices })
             }
             _ => unreachable!("bad assign lhs op: {op:?}"),
@@ -218,11 +223,11 @@ fn parse_assign(pair: Pair<'_, Rule>) -> Assign {
         Rule::div_assign => AssignOp::DivAssign,
         rule => unreachable!("bad assign op: {rule:?}"),
     };
-    let rhs = parse_expr(inner.next().unwrap());
+    let rhs = parse_expr_pair(inner.next().unwrap());
     Assign { lhs, op, rhs }
 }
 
-fn parse_expr(pair: Pair<'_, Rule>) -> Box<Expr> {
+fn parse_expr_pair(pair: Pair<'_, Rule>) -> Box<Expr> {
     parse_expr_rec(pair, &pratt())
 }
 

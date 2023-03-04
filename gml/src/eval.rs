@@ -12,6 +12,8 @@ pub enum Error {
     WithPosition(Box<Error>, ast::Pos),
     #[error("{0}\n  in {1}")]
     WithScriptName(Box<Error>, String),
+    #[error("{0}")]
+    Custom(String),
     #[error("unexpected exit")]
     Exit,
     #[error("unexpected return {0:?}")]
@@ -349,13 +351,23 @@ pub struct Namespace {
     vars: RefCell<HashMap<String, Value>>,
 }
 
+impl Namespace {
+    pub fn get(&self, name: &str) -> Option<Value> {
+        self.vars.borrow().get(name).cloned()
+    }
+
+    pub fn insert(&self, name: impl Into<String>, value: impl Into<Value>) {
+        self.vars.borrow_mut().insert(name.into(), value.into());
+    }
+}
+
 impl Object for Namespace {
     fn member(&self, name: &str) -> Result<Option<Value>> {
-        Ok(self.vars.borrow().get(name).cloned())
+        Ok(self.get(name))
     }
 
     fn set_member(&self, name: &str, value: Value) -> Result {
-        self.vars.borrow_mut().insert(name.into(), value);
+        self.insert(name, value);
         Ok(())
     }
 }
@@ -457,10 +469,10 @@ impl<'a> Context<'a> {
             ast::Var::Global(id) => Ok(self.global.get(id)?.unwrap_or_default()),
             ast::Var::Local(id) => {
                 if let Some(value) = self.locals.member(id)? {
-                    return Ok(value.clone());
+                    return Ok(value);
                 }
                 if let Some(value) = self.instance.member(id)? {
-                    return Ok(value.clone());
+                    return Ok(value);
                 }
                 if let Some(value) = self.global.get(id)? {
                     return Ok(value);
@@ -479,7 +491,7 @@ impl<'a> Context<'a> {
                 self.global.set(id, value)?;
             }
             ast::Var::Local(id) => {
-                if let Some(_) = self.locals.member(id)? {
+                if self.locals.get(id).is_some() {
                     self.locals.set_member(id, value)?;
                 } else {
                     self.instance.set_member(id, value)?;

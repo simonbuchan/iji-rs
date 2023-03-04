@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -10,6 +11,8 @@ pub trait Asset {
 }
 
 pub struct AssetId<T>(u32, PhantomData<T>);
+
+impl<T> AssetId<T> {}
 
 impl<T> AssetId<T> {
     pub fn new(index: u32) -> Self {
@@ -51,11 +54,6 @@ impl<T: Asset> AssetSet<T> {
         AssetId::new(index)
     }
 
-    pub fn entry(&self, id: AssetId<T>) -> (&str, &T) {
-        let (name, item) = &self.items[&id.0];
-        (name, item)
-    }
-
     pub fn get(&self, id: AssetId<T>) -> &T {
         &self.items[&id.0].1
     }
@@ -67,49 +65,37 @@ pub struct Assets {
     pub sprites: AssetSet<SpriteAsset>,
 }
 
-pub struct Loader<'content> {
-    // indirecting content so it can be concurrently referenced
-    content: &'content gmk_file::Content,
-    assets: Assets,
+pub struct Loader<'a> {
+    content: &'a gmk_file::Content,
+    assets: &'a RefCell<Assets>,
 }
 
-impl<'content> Loader<'content> {
-    pub fn new(content: &'content gmk_file::Content) -> Self {
-        Self {
-            content,
-            assets: Default::default(),
-        }
-    }
-
-    pub fn content(&self) -> &'content gmk_file::Content {
-        self.content
-    }
-
-    pub fn assets(&self) -> &Assets {
-        &self.assets
-    }
-
-    pub fn reset_assets(&mut self) {
-        self.assets = Assets::default();
-    }
-
-    pub fn take_assets(&mut self) -> Assets {
-        std::mem::take(&mut self.assets)
+impl<'a> Loader<'a> {
+    pub fn new(content: &'a gmk_file::Content, assets: &'a RefCell<Assets>) -> Self {
+        Self { content, assets }
     }
 
     pub fn get_background(&mut self, index: u32) -> AssetId<BackgroundAsset> {
         self.assets
+            .borrow_mut()
             .backgrounds
             .load(&self.content.backgrounds, index)
     }
 
     pub fn get_sprite(&mut self, index: u32) -> AssetId<SpriteAsset> {
-        self.assets.sprites.load(&self.content.sprites, index)
+        self.assets
+            .borrow_mut()
+            .sprites
+            .load(&self.content.sprites, index)
     }
 }
 
 pub struct BackgroundAsset {
     pub texture: Texture2D,
+    pub size: UVec2,
+    pub tile_enabled: bool,
+    pub tile_pos: UVec2,
+    pub tile_size: UVec2,
 }
 
 impl Drop for BackgroundAsset {
@@ -125,19 +111,21 @@ impl Asset for BackgroundAsset {
         let data = def.image.as_ref().unwrap().data.as_ref().unwrap();
         let texture = Texture2D::from_file_with_format(data, None);
         // always present since GM 5.x
-        // let tiling = def.tiling.as_ref().unwrap();
+        let tiling = def.tiling.as_ref().unwrap();
 
-        // let mut tile_size = None;
-        // if tiling.enabled == gmk_file::Bool32::True {
-        //     tiling.
-        // }
-        Self { texture }
+        Self {
+            texture,
+            size: uvec2(def.size.0, def.size.1),
+            tile_enabled: tiling.enabled.into(),
+            tile_pos: uvec2(tiling.offset.0, tiling.offset.1),
+            tile_size: uvec2(tiling.size.0, tiling.size.1),
+        }
     }
 }
 
 pub struct SpriteAsset {
-    pub size: Vec2,
-    pub origin: Vec2,
+    pub size: UVec2,
+    pub origin: IVec2,
     pub textures: Vec<Texture2D>,
 }
 
@@ -160,9 +148,11 @@ impl Asset for SpriteAsset {
                 let data = image.data.as_ref().unwrap();
                 let mut image = Image::from_file_with_format(data, None);
 
-                if def.transparent == gmk_file::Bool32::True {
+                // the bottom left pixel is the transparent pixel color
+                if def.transparent.into() {
+                    let t: [u8; 4] = image.get_pixel(0, u32::from(image.height) - 1).into();
                     let data = image.get_image_data_mut();
-                    let t = data[0];
+
                     for p in data {
                         if *p == t {
                             *p = [0, 0, 0, 0];
@@ -174,12 +164,9 @@ impl Asset for SpriteAsset {
             })
             .collect::<Vec<_>>();
 
-        let size = Vec2::new(def.size.0 as f32, def.size.1 as f32);
-        let origin = Vec2::new(def.origin.0 as f32, def.origin.1 as f32);
-
         Self {
-            size,
-            origin,
+            size: uvec2(def.size.0, def.size.1),
+            origin: ivec2(def.origin.0, def.origin.1),
             textures,
         }
     }

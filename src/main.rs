@@ -1,6 +1,7 @@
 #![deny(rust_2018_idioms)]
 
 use macroquad::prelude::*;
+use state::Event;
 
 mod assets;
 mod state;
@@ -14,14 +15,6 @@ fn conf() -> Conf {
     }
 }
 
-// fn write_debug_logs(dir: &str, chunk: &gmk_file::ResourceChunk<impl std::fmt::Debug>) {
-//     for (name, item) in chunk {
-//         let parent = std::path::Path::new("ref/out").join(dir).join(name);
-//         std::fs::create_dir_all(&parent).unwrap();
-//         std::fs::write(parent.join("debug.log"), format!("{item:#?}")).unwrap();
-//     }
-// }
-
 fn main() {
     let content = gmk_file::parse("ref/source code/iji.gmk");
 
@@ -29,190 +22,198 @@ fn main() {
 }
 
 async fn run_main(content: gmk_file::Content) {
-    let mut ctx = state::Context::new(&content, scripts::create_context());
-    ctx.scripts = scripts::define_scripts(&mut ctx.gml, &content);
-    for (index, item) in content.objects.items.iter().enumerate() {
-        let Some(item) = item else { continue; };
+    let global = state::Global::new(content);
 
-        struct ObjectRef(u32);
-
-        use gml::eval::Object;
-
-        impl Object for ObjectRef {}
-
-        let id = ctx
-            .gml
-            .new_instance(Some(Box::new(ObjectRef(index as u32))));
-
-        ctx.gml
-            .global_mut()
-            .set_member(&item.name.0, id.into())
-            .unwrap();
-    }
-    let mut room = state::Room::load(&mut ctx, "rom_main");
-
-    room.dispatch(&mut ctx, &gmk_file::EventId::Create);
+    global.goto_room_order(0);
 
     loop {
-        room.dispatch(
-            &mut ctx,
-            &gmk_file::EventId::Draw(gmk_file::DrawEventId::Normal),
-        );
-        room.draw(&ctx);
+        for &key in state::KEY_CODES {
+            if is_key_pressed(key) {
+                global.dispatch(Event::KeyPress(key));
+            }
+            if is_key_down(key) {
+                global.dispatch(Event::KeyDown(key));
+            }
+            if is_key_released(key) {
+                global.dispatch(Event::KeyRelease(key));
+            }
+        }
+        global.step();
+        global.draw();
 
         next_frame().await;
+
+        global.cleanup();
     }
 }
 
 mod scripts {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    use gml::eval::Value;
     use macroquad::prelude::*;
-    use rayon::prelude::*;
 
-    #[derive(Default)]
-    pub struct Global {
-        vars: gml::eval::Namespace,
-    }
+    use gml::eval::{Context, Value};
 
-    impl gml::eval::Object for Global {
-        fn member(&self, name: &str) -> gml::eval::Result<Option<&Value>> {
-            self.vars.member(name)
-        }
+    use crate::state::{key_code, Event, FontAsset, Global};
 
-        fn set_member(&mut self, name: &str, value: Value) -> gml::eval::Result {
-            self.vars.set_member(name, value)
-        }
-    }
-
-    pub fn create_context() -> gml::eval::Context<Global> {
-        let mut ctx = gml::eval::Context::default();
-        ctx.def_fn("floor", |_ctx, args| Ok(args[0].to_float().floor().into()));
-        ctx.def_fn("random", |_ctx, args| {
-            let range = args[0].to_float();
-            Ok(rand::gen_range(0.0, range).into())
-        });
-
-        ctx.def_fn("ord", |_ctx, args| {
-            let value = args[0].to_str();
-            let char = value.chars().next();
-            Ok(char.map_or(().into(), |char| (char as i32).into()))
-        });
-        ctx.def_fn("string", |_ctx, args| Ok(args[0].to_str().into()));
-        ctx.def_fn("string_length", |_ctx, args| {
-            Ok(i32::try_from(args[0].to_str().len())
+    pub fn call(
+        global: &Global,
+        context: &mut Context<'_>,
+        id: &str,
+        args: Vec<Value>,
+    ) -> gml::eval::Result<Value> {
+        match id {
+            "floor" => Ok(args[0].to_float().floor().into()),
+            "random" => {
+                let range = args[0].to_float();
+                Ok(rand::gen_range(0.0, range).into())
+            }
+            "ord" => {
+                let value = args[0].to_str();
+                let char = value.chars().next();
+                Ok(char.map_or(().into(), |char| (char as i32).into()))
+            }
+            "string" => Ok(args[0].to_str().into()),
+            "string_length" => Ok(i32::try_from(args[0].to_str().len())
                 .expect("string too long")
-                .into())
-        });
-        ctx.def_fn("string_char_at", |_ctx, args| {
-            let value = args[0].to_str();
-            let index = args[1].to_int();
-            let char = value.get(index as usize..).and_then(|s| s.chars().next());
-            Ok(char.map_or(().into(), |char| (char as i32).into()))
-        });
+                .into()),
+            "string_char_at" => {
+                let value = args[0].to_str();
+                let index = args[1].to_int();
+                let char = value.get(index as usize..).and_then(|s| s.chars().next());
+                Ok(char.map_or(().into(), |char| (char as i32).into()))
+            }
 
-        ctx.def_fn("file_exists", |_ctx, args| {
-            let _path = args[0].to_str();
-            Ok(false.into())
-        });
-        ctx.def_fn("file_text_open_write", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("file_text_close", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("file_text_write_string", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("file_text_writeln", |_ctx, _args| Ok(().into()));
+            "file_exists" => {
+                let _path = args[0].to_str();
+                Ok(false.into())
+            }
+            "file_text_open_write"
+            | "file_text_close"
+            | "file_text_write_string"
+            | "file_text_writeln"
+            | "draw_sprite"
+            | "draw_set_blend_mode"
+            | "sound_loop"
+            | "sound_stop"
+            | "sound_stop_all"
+            | "keyboard_unset_map" => Ok(().into()),
 
-        ctx.def_fn("sound_stop_all", |_ctx, _args| Ok(().into()));
+            "room_goto_next" => {
+                global.room_goto_next();
+                Ok(().into())
+            }
 
-        ctx.def_fn("keyboard_unset_map", |_ctx, _args| Ok(().into()));
+            "keyboard_check" => {
+                let key = args[0].to_int();
+                if let Ok(key) = key.try_into() {
+                    Ok(is_key_pressed(key_code(key)).into())
+                } else {
+                    Ok(false.into())
+                }
+            }
 
-        ctx.def_fn("instance_create", |ctx, args| {
-            println!("instance_create({args:?})");
-            let id = ctx.new_instance(None);
-            // todo: also add to room instances
-            Ok(id.into())
-        });
+            "font_add_sprite" => {
+                let sprite_index = args[0].to_int();
+                let first = args[1].to_int();
+                let _proportional = args[2].to_bool();
+                let _sep = args[3].to_bool();
 
-        ctx.def_fn("draw_set_font", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("draw_set_color", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("draw_text_ext", |_ctx, _args| Ok(().into()));
-        ctx.def_fn("draw_sprite", |_ctx, _args| Ok(().into()));
+                let id = global
+                    .loader()
+                    .get_sprite(sprite_index.try_into().expect("invalid sprite index"));
+                let id = global.state.borrow_mut().fonts.add(FontAsset::new(
+                    id,
+                    first.try_into().expect("invalid font char"),
+                ));
+                Ok(id.into())
+            }
 
-        ctx
-    }
+            "make_color_rgb" => {
+                let r = args[0].to_int();
+                let g = args[1].to_int();
+                let b = args[2].to_int();
+                let color = r & 0xFF | ((g & 0xFF) << 8) | ((b & 0xFF) << 16);
+                Ok(color.into())
+            }
 
-    pub fn define_scripts(
-        ctx: &mut gml::eval::Context<Global>,
-        content: &gmk_file::Content,
-    ) -> HashMap<u32, Arc<gml::ast::Script>> {
-        // scripts parsed in parallel
-        let scripts = content
-            .scripts
-            .items
-            .par_iter()
-            .enumerate()
-            .flat_map(|(index, item)| {
-                item.as_ref().map(|item| {
-                    let script = gml::parse(&item.name.0, &item.data.script.0).unwrap();
-                    (index as u32, item.name.0.clone(), Arc::new(script))
-                })
-            })
-            .collect::<Vec<_>>();
+            "draw_set_font" => {
+                let font_index = args[0].to_int();
+                global.state.borrow_mut().fonts.set(font_index);
+                Ok(().into())
+            }
 
-        for (_, name, script) in &scripts {
-            let name = name.clone();
-            let script = script.clone();
-            ctx.def_fn(name.clone(), move |ctx, _args| ctx.exec_script(&script));
+            "draw_text_ext" => {
+                let x = args[0].to_int();
+                let y = args[1].to_int();
+                let string = args[2].to_str();
+                let sep = args[3].to_int();
+                let w = args[4].to_int();
+                let state = global.state.borrow();
+                if let Some(font) = state.fonts.get() {
+                    font.draw_text(global, ivec2(x, y), &string, sep, w);
+                }
+                Ok(().into())
+            }
+
+            "draw_set_color" => {
+                let value = args.get(0).map_or(0, Value::to_int);
+                let [r, g, b, _] = value.to_le_bytes();
+                global.state.borrow_mut().color = Color::from_rgba(r, g, b, 0xFF);
+                Ok(().into())
+            }
+            "draw_rectangle" => {
+                let x1 = args.get(0).map_or(0, Value::to_int);
+                let y1 = args.get(1).map_or(0, Value::to_int);
+                let x2 = args.get(2).map_or(0, Value::to_int);
+                let y2 = args.get(3).map_or(0, Value::to_int);
+                let outline = args.get(4).map_or(false, Value::to_bool);
+                let pos = ivec2(x1, y1).as_vec2();
+                let size = ivec2(x2, y2).as_vec2() - pos;
+                let color = global.state.borrow().color;
+                if outline {
+                    draw_rectangle_lines(pos.x, pos.y, size.x, size.y, 1.0, color);
+                } else {
+                    draw_rectangle(pos.x, pos.y, size.x, size.y, color);
+                }
+                Ok(().into())
+            }
+
+            "instance_create" => {
+                let x = args[0].to_int();
+                let y = args[1].to_int();
+                let object_index = args[2]
+                    .as_int()
+                    .and_then(|index| index.try_into().ok())
+                    .ok_or_else(|| gml::eval::Error::InvalidInt(args[2].clone()))?;
+
+                let id = global.next_instance_id();
+                let id = gml::eval::ObjectId::new(id);
+                let instance = global.instance_create(id, ivec2(x, y), object_index);
+
+                instance.dispatch(global, context, Event::Create);
+
+                Ok(id.into())
+            }
+
+            "instance_destroy" => {
+                let id = args
+                    .get(0)
+                    .unwrap_or(&context.instance_id.into())
+                    .as_object_id()
+                    .ok_or_else(|| gml::eval::Error::InvalidObject(args[0].clone()))?;
+                global.destroy_instance(id);
+                Ok(().into())
+            }
+
+            "instance_number" => {
+                let object_index = args[0].to_int();
+                if let Ok(object_index) = u32::try_from(object_index) {
+                    Ok(global.instance_number(object_index).into())
+                } else {
+                    Ok(0.into())
+                }
+            }
+
+            _ => Err(gml::eval::Error::UndefinedFunction(id.to_string())),
         }
-
-        scripts
-            .into_iter()
-            .map(|(index, _, script)| (index, script))
-            .collect()
     }
 }
-
-// fn discover_fns(content: &gmk_file::Content) {
-//     #[derive(Debug, Default)]
-//     struct Visitor {
-//         fn_defs: BTreeSet<String>,
-//         fn_refs: BTreeSet<String>,
-//     }
-//
-//     let mut visitor = Visitor::default();
-//
-//     for (id, source) in enum_scripts(&content) {
-//         if let ScriptId::Resource(name) = id {
-//             visitor.fn_defs.insert(name.into());
-//         }
-//         let file = gml::parse(name, source).unwrap();
-//         file.visit(&mut visitor);
-//     }
-//
-//     for undef in visitor.fn_refs.difference(&visitor.fn_defs) {
-//         println!("- {undef}");
-//     }
-//
-//     impl gml::ast::Visitor for Visitor {
-//         fn expr(&mut self, value: &gml::ast::Expr) -> bool {
-//             if let gml::ast::Expr::Call { id, .. } = value {
-//                 self.fn_refs.insert(id.clone());
-//             }
-//             true
-//         }
-//     }
-// }
-//
-// fn enum_scripts(content: &gmk_file::Content) -> impl Iterator<Item = (ScriptId<'_>, &str)> {
-//     content
-//         .scripts
-//         .iter()
-//         .map(|(name, res)| (ScriptId::Resource(name), res.script.0.as_str()))
-// }
-//
-// enum ScriptId<'a> {
-//     Resource(&'a str),
-//     RoomInit,
-//     InstanceInit,
-//     TimelineAction,
-// }

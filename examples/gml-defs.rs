@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use gml::ast;
 
@@ -15,19 +15,24 @@ fn main() {
         fn iter_undef(&self) -> impl Iterator<Item = &str> {
             self.refs.difference(&self.defs).map(|i| i.as_str())
         }
+
+        fn iter_unused(&self) -> impl Iterator<Item = &str> {
+            self.defs.difference(&self.refs).map(|i| i.as_str())
+        }
     }
 
     #[derive(Debug, Default)]
     struct Visitor {
         fns: Names,
+        const_defs: HashSet<String>,
         globals: Names,
         locals: Names,
     }
 
     impl Visitor {
         fn def_resources<T>(&mut self, chunk: &gmk_file::ResourceChunk<T>) {
-            for (name, _) in chunk {
-                self.globals.defs.insert(name.to_string());
+            for (_, name, _) in chunk {
+                self.const_defs.insert(name.to_string());
             }
         }
     }
@@ -44,6 +49,13 @@ fn main() {
     visitor.def_resources(&content.objects);
     visitor.def_resources(&content.rooms);
 
+    for (_, action) in enum_actions(&content) {
+        if let Some(index) = action_execute_script(action) {
+            let (name, _) = content.scripts.item(index);
+            visitor.fns.refs.insert(name.into());
+        }
+    }
+
     for (id, source) in enum_scripts(&content) {
         if let ScriptId::Resource(name) = id {
             visitor.fns.defs.insert(name.into());
@@ -58,25 +70,45 @@ fn main() {
         }
     }
 
-    // all global defs are also local defs
+    // all global refs and defs are also local refs and defs
     visitor
         .locals
         .defs
         .extend(visitor.globals.defs.iter().cloned());
+    visitor
+        .locals
+        .refs
+        .extend(visitor.globals.refs.iter().cloned());
 
-    println!("fns");
-    for undef in visitor.fns.iter_undef() {
-        println!("- {undef}");
+    let groups = [
+        ("fns", &visitor.fns),
+        ("globals", &visitor.globals),
+        ("locals", &visitor.locals),
+    ];
+    for (group, names) in groups {
+        println!("{group} undef");
+        for name in names.iter_undef() {
+            if !visitor.const_defs.contains(name) {
+                println!("- {name}");
+            }
+        }
+        println!("{group} unused");
+        for name in names.iter_unused() {
+            println!("- {name}");
+        }
     }
 
-    println!("globals");
-    for undef in visitor.globals.iter_undef() {
-        println!("- {undef}");
-    }
-
-    println!("locals");
-    for undef in visitor.locals.iter_undef() {
-        println!("- {undef}");
+    impl Visitor {
+        fn visit_call(&mut self, name: &str, args: &[Box<ast::Expr>]) {
+            self.fns.refs.insert(name.into());
+            if name == "script_execute" {
+                if let Some(arg) = args.get(0) {
+                    if let ast::Expr::Var(ast::Var::Local(name)) = arg.as_ref() {
+                        self.fns.refs.insert(name.clone());
+                    }
+                }
+            }
+        }
     }
 
     impl ast::Visitor for Visitor {
@@ -96,7 +128,10 @@ fn main() {
                     ast::Expr::Index { lhs, .. } => {
                         assign_lhs = lhs;
                     }
-                    ast::Expr::Call { .. } => return true,
+                    ast::Expr::Call { name, args, .. } => {
+                        self.visit_call(name, args);
+                        return false;
+                    }
                     _ => unreachable!("invalid lhs: {assign_lhs}"),
                 }
             };
@@ -112,12 +147,12 @@ fn main() {
                 }
             }
 
-            true
+            !def
         }
 
         fn expr(&mut self, value: &ast::Expr) -> bool {
-            if let ast::Expr::Call { name, .. } = value {
-                self.fns.refs.insert(name.clone());
+            if let ast::Expr::Call { name, args, .. } = value {
+                self.visit_call(name, args);
             }
             true
         }
@@ -139,8 +174,8 @@ fn enum_scripts(content: &gmk_file::Content) -> impl Iterator<Item = (ScriptId<'
     content
         .scripts
         .iter()
-        .map(|(name, res)| (ScriptId::Resource(name), res.script.0.as_str()))
-        .chain(content.rooms.iter().flat_map(|(name, res)| {
+        .map(|(_, name, res)| (ScriptId::Resource(name), res.script.0.as_str()))
+        .chain(content.rooms.iter().flat_map(|(_, name, res)| {
             Some((ScriptId::RoomInit(name), res.creation_code.0.as_str()))
                 .into_iter()
                 .chain(res.instances.iter().map(|res| {
@@ -150,26 +185,52 @@ fn enum_scripts(content: &gmk_file::Content) -> impl Iterator<Item = (ScriptId<'
                     )
                 }))
         }))
-        .chain(content.objects.iter().flat_map(|(name, res)| {
+        .chain(
+            enum_actions(content)
+                .filter_map(|(id, a)| action_code(a).map(|code| (ScriptId::Action(id), code))),
+        )
+}
+
+fn enum_actions(
+    content: &gmk_file::Content,
+) -> impl Iterator<Item = (ActionId<'_>, &gmk_file::Action)> {
+    content
+        .objects
+        .iter()
+        .flat_map(|(_, name, res)| {
             res.events.iter().flat_map(|(id, e)| {
-                e.actions.iter().enumerate().filter_map(|(i, a)| {
-                    action_code(a).map(|code| (ScriptId::ObjectEvent(name, *id, i), code))
-                })
+                e.actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (ActionId::ObjectEvent(name, *id, i), a))
             })
-        }))
-        .chain(content.timelines.iter().flat_map(|(name, res)| {
+        })
+        .chain(content.timelines.iter().flat_map(|(_, name, res)| {
             res.moments.iter().flat_map(|m| {
-                m.actions.iter().enumerate().filter_map(|(i, a)| {
-                    action_code(a).map(|code| (ScriptId::TimelineAction(name, m.position, i), code))
-                })
+                m.actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (ActionId::Timeline(name, m.position, i), a))
             })
         }))
 }
 
 fn action_code(action: &gmk_file::Action) -> Option<&str> {
-    match action.kind {
-        gmk_file::ActionKind::Code => Some(action.argument_values[0].0.as_str()),
-        _ => None,
+    if action.kind == gmk_file::ActionKind::Code {
+        Some(action.argument_values[0].0.as_str())
+    } else {
+        None
+    }
+}
+
+fn action_execute_script(action: &gmk_file::Action) -> Option<u32> {
+    if action.kind == gmk_file::ActionKind::Normal
+        && action.exec == gmk_file::ActionExec::Function
+        && action.function_name.0.as_str() == "action_execute_script"
+    {
+        action.argument_values.get(0)?.parse().ok()
+    } else {
+        None
     }
 }
 
@@ -178,6 +239,11 @@ enum ScriptId<'a> {
     Resource(&'a str),
     RoomInit(&'a str),
     InstanceInit(&'a str, u32),
+    Action(ActionId<'a>),
+}
+
+#[derive(Debug)]
+enum ActionId<'a> {
     ObjectEvent(&'a str, gmk_file::EventId, usize),
-    TimelineAction(&'a str, u32, usize),
+    Timeline(&'a str, u32, usize),
 }
