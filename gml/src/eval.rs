@@ -62,13 +62,39 @@ impl<T> ResultExt<T> for Result<T> {
 /// Values are any possible immutable result of evaluating an expression.
 /// They cannot explicitly reference an object, but may contain an integer
 /// that can be coerced to an object id in the context of an assignment.
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug)]
 pub enum Value {
     Undefined,
     Bool(bool),
     Int(i32),
     Float(f64),
     String(String),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Undefined, Self::Undefined) => true,
+            (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+            (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
+            (Self::Float(lhs), rhs) => lhs == &rhs.to_float(),
+            _ => false,
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Self::Undefined, Self::Undefined) => Some(std::cmp::Ordering::Equal),
+            (Self::String(lhs), Self::String(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Int(lhs), Self::Int(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Float(lhs), rhs) => lhs.partial_cmp(&rhs.to_float()),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -361,6 +387,12 @@ impl Namespace {
     }
 }
 
+impl std::fmt::Debug for Namespace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.vars.borrow().fmt(f)
+    }
+}
+
 impl Object for Namespace {
     fn member(&self, name: &str) -> Result<Option<Value>> {
         Ok(self.get(name))
@@ -562,7 +594,7 @@ impl<'a> Context<'a> {
 
     pub fn exec_script(&mut self, script: &ast::Script, arguments: &[Value]) -> Result<Value> {
         let old_locals = std::mem::take(&mut self.locals);
-        for (index, value) in arguments.into_iter().enumerate() {
+        for (index, value) in arguments.iter().enumerate() {
             self.locals
                 .set_member(&format!("argument{index}"), value.clone())?;
         }
@@ -629,12 +661,7 @@ impl<'a> Context<'a> {
                 let value = self.eval(obj)?;
                 let id = value.as_object_id().ok_or(Error::InvalidObject(value))?;
                 let new_instance = self.instance(id)?;
-                let old_instance_id = std::mem::replace(&mut self.instance_id, id);
-                let old_instance = std::mem::replace(&mut self.instance, new_instance);
-                let result = self.exec(body);
-                self.instance = old_instance;
-                self.instance_id = old_instance_id;
-                result?;
+                self.with_instance(id, new_instance, |ctx| ctx.exec(body))?;
             }
             ast::Stmt::Return { expr } => {
                 let value = self.eval(expr)?;
@@ -649,6 +676,20 @@ impl<'a> Context<'a> {
             ast::Stmt::Empty => {}
         }
         Ok(())
+    }
+
+    pub fn with_instance<F: FnOnce(&mut Self) -> R, R>(
+        &mut self,
+        instance_id: ObjectId,
+        instance: Rc<dyn Object>,
+        body: F,
+    ) -> R {
+        let old_instance_id = std::mem::replace(&mut self.instance_id, instance_id);
+        let old_instance = std::mem::replace(&mut self.instance, instance);
+        let result = body(self);
+        self.instance = old_instance;
+        self.instance_id = old_instance_id;
+        result
     }
 
     fn exec_assign(&mut self, assign: &ast::Assign) -> Result<()> {

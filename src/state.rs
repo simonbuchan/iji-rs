@@ -22,6 +22,7 @@ fn default<T: Default>() -> T {
     Default::default()
 }
 
+#[derive(Debug)]
 pub struct DoubleMap<V> {
     pub names: HashMap<String, u32>,
     pub values: HashMap<u32, V>,
@@ -75,13 +76,13 @@ impl Object for ObjectType {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct GlobalState {
     pub color: Color,
     pub fonts: FontMap,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct FontMap {
     last_index: i32,
     items: HashMap<i32, FontAsset>,
@@ -104,6 +105,7 @@ impl FontMap {
     }
 }
 
+#[derive(Debug)]
 pub struct FontAsset {
     sprite: AssetId<SpriteAsset>,
     first: u32,
@@ -115,6 +117,7 @@ impl FontAsset {
     }
 
     pub fn draw_text(&self, global: &Global, pos: IVec2, string: &str, sep: i32, w: i32) {
+        let wrap = pos.x + w;
         let assets = global.assets.borrow();
         let sprite = assets.sprites.get(self.sprite);
         let mut p = pos;
@@ -124,13 +127,18 @@ impl FontAsset {
             let Ok(index) = usize::try_from(index) else { continue };
             let Some(texture) = sprite.textures.get(index) else { continue };
 
-            draw_texture(*texture, p.x as f32, p.y as f32, WHITE);
-
-            p.x += sprite.size.x as i32;
-            if p.x > pos.x + w {
+            let r = p.x + sprite.size.x as i32;
+            let dp;
+            if r <= wrap {
+                dp = p;
+                p.x = r;
+            } else {
                 p.x = pos.x;
                 p.y += sep;
+                dp = p;
             }
+
+            draw_texture(*texture, dp.x as f32, dp.y as f32, WHITE);
         }
     }
 }
@@ -139,6 +147,7 @@ pub struct Global {
     content: gmk_file::Content,
     assets: RefCell<Assets>,
     object_types: HashMap<u32, ObjectAsset>,
+    consts: gml::eval::Namespace,
     vars: gml::eval::Namespace,
     scripts: DoubleMap<gml::ast::Script>,
     room_order_index: RefCell<usize>,
@@ -148,9 +157,19 @@ pub struct Global {
     last_instance_id: AtomicU32,
 }
 
+impl std::fmt::Debug for Global {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Global")
+            .field("vars", &self.vars)
+            .field("room", &self.room)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Global {
     pub fn new(content: gmk_file::Content) -> Self {
-        let vars = define_consts(&content);
+        let consts = define_consts(&content);
         let object_types = define_objects(&content);
         let scripts = define_scripts(&content);
         let last_instance_id = AtomicU32::new(content.last_instance_id);
@@ -159,7 +178,8 @@ impl Global {
             content,
             assets: default(),
             object_types,
-            vars,
+            consts,
+            vars: default(),
             scripts,
             room_order_index: RefCell::new(0),
             room: RefCell::new(Room::new()),
@@ -197,6 +217,7 @@ impl Global {
 
     pub fn goto_room(&self, index: u32) {
         let def = &self.content.rooms[index];
+        assert_eq!(&*def.creation_code, "");
         let Ok(mut room) = self.room.try_borrow_mut() else {
             *self.next_room_index.borrow_mut() = Some(index);
             return;
@@ -218,6 +239,10 @@ impl Global {
         room.object_instances.borrow_mut().values =
             std::mem::take(&mut room.added_instances.borrow_mut());
 
+        // hack to work around obj_menuback Step event script spamming errors.
+        let dummy = self.new_instance(Rc::<gml::eval::Namespace>::default());
+        self.vars.insert("face", dummy);
+
         self.dispatch(Event::Create);
     }
 
@@ -231,6 +256,10 @@ impl Global {
 
     pub fn draw(&self) {
         self.room.borrow().draw(self);
+    }
+
+    pub fn dump(&self) {
+        println!("{self:#?}");
     }
 
     pub fn cleanup(&self) {
@@ -276,11 +305,11 @@ impl Global {
         let alarm_id = self.new_instance(alarm.clone());
 
         let instance = Rc::new(Instance {
+            depth: obj.depth,
             state: RefCell::new(InstanceState {
                 pos: pos.as_dvec2(),
                 velocity: default(),
                 visible: obj.visible.into(),
-                depth: obj.depth,
                 sprite_index: obj.sprite_index,
                 sprite_asset: None,
                 image_speed: 1.0,
@@ -314,13 +343,19 @@ impl gml::eval::Global for Global {
     fn get(&self, name: &str) -> gml::eval::Result<Option<Value>> {
         if let Some(id) = self.scripts.names.get(name) {
             Ok(Some(Value::Int((*id).try_into().expect("invalid id"))))
+        } else if let Some(value) = self.consts.get(name) {
+            Ok(Some(value))
         } else {
             self.vars.member(name)
         }
     }
 
     fn set(&self, name: &str, value: Value) -> gml::eval::Result {
-        self.vars.set_member(name, value)
+        if self.consts.get(name).is_some() {
+            Err(gml::eval::Error::AssignToValue)
+        } else {
+            self.vars.set_member(name, value)
+        }
     }
 
     fn instance(&self, id: ObjectId) -> Option<Rc<dyn Object>> {
@@ -384,12 +419,29 @@ pub struct Room {
     object_instances: RefCell<DoubleMap<Rc<Instance>>>,
     foreground_layers: Vec<Layer>,
     speed: f32,
-    elasped: RefCell<f32>,
+    elapsed: RefCell<f32>,
 
     script_instances: RefCell<HashMap<ObjectId, Rc<dyn Object>>>,
 
     added_instances: RefCell<HashMap<u32, Rc<Instance>>>,
     destroyed_instances: RefCell<Vec<ObjectId>>,
+}
+
+impl std::fmt::Debug for Room {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Room")
+            .field("view", &self.view)
+            .field("background_color", &self.background_color)
+            .field("background_layers", &self.background_layers)
+            .field("tiles", &self.tiles)
+            .field("object_instances", &self.object_instances)
+            .field("speed", &self.speed)
+            .field("elapsed", &self.elapsed)
+            .field("script_instances", &self.script_instances.borrow().keys())
+            .field("added_instances", &self.added_instances)
+            .field("destroyed_instances", &self.destroyed_instances)
+            .finish()
+    }
 }
 
 impl Room {
@@ -406,7 +458,7 @@ impl Room {
             foreground_layers: vec![],
 
             speed: 30.0,
-            elasped: RefCell::new(0.0),
+            elapsed: RefCell::new(0.0),
 
             script_instances: default(),
             added_instances: default(),
@@ -462,7 +514,7 @@ impl Room {
     }
 
     pub fn step(&self, global: &Global) {
-        let mut elapsed = self.elasped.borrow_mut();
+        let mut elapsed = self.elapsed.borrow_mut();
         *elapsed += get_frame_time() * self.speed;
         while *elapsed >= 1.0 {
             *elapsed -= 1.0;
@@ -481,16 +533,43 @@ impl Room {
         for layer in &self.background_layers {
             layer.draw(global, &self.view);
         }
-        for tile in &self.tiles {
-            tile.draw(global, &self.view);
+
+        let object_instances = self.object_instances.borrow();
+        enum DrawItem<'a> {
+            Tile(&'a Tile),
+            Instance(u32, Rc<Instance>),
         }
-        for instance in self.object_instances.borrow().values.values() {
-            instance.draw(global, &self.view);
+        let mut depth_draws = Vec::new();
+        depth_draws.extend(self.tiles.iter().map(DrawItem::Tile));
+        depth_draws.extend(
+            object_instances
+                .values
+                .iter()
+                .filter(|(_, item)| {
+                    item.state.borrow().visible && (-16000..=16000).contains(&item.depth)
+                })
+                .map(|(id, item)| DrawItem::Instance(*id, item.clone())),
+        );
+        depth_draws.sort_by_key(|item| match item {
+            DrawItem::Tile(tile) => -tile.depth,
+            DrawItem::Instance(_, instance) => -instance.depth,
+        });
+
+        for draw in depth_draws {
+            match draw {
+                DrawItem::Tile(tile) => tile.draw(global, &self.view),
+                DrawItem::Instance(id, instance) => {
+                    instance.draw(global, &self.view);
+                    let mut ctx = Context::new(global, ObjectId::new(id), instance.clone());
+                    instance.dispatch(global, &mut ctx, Event::Draw);
+                }
+            }
         }
+        drop(object_instances);
+
         for layer in &self.foreground_layers {
             layer.draw(global, &self.view);
         }
-        self.dispatch(global, Event::Draw);
     }
 
     pub fn destroy_instance(&self, id: ObjectId) {
@@ -519,10 +598,10 @@ impl Room {
                     .remove(&id);
             }
         }
-        let mut object_instances = self.object_instances.borrow_mut();
-        for (id, instance) in self.added_instances.borrow_mut().drain() {
-            object_instances.values.insert(id, instance);
-        }
+        self.object_instances
+            .borrow_mut()
+            .values
+            .extend(self.added_instances.borrow_mut().drain());
     }
 }
 
@@ -530,11 +609,13 @@ trait Draw {
     fn draw(&self, assets: &Global, view: &View);
 }
 
+#[derive(Debug)]
 struct View {
     offset: IVec2,
     size: UVec2,
 }
 
+#[derive(Debug)]
 struct Layer {
     enabled: bool,
     asset: AssetId<BackgroundAsset>,
@@ -585,8 +666,9 @@ impl Draw for Layer {
     }
 }
 
+#[derive(Debug)]
 struct Tile {
-    depth: u32,
+    depth: i32,
     asset: AssetId<BackgroundAsset>,
     pos: IVec2,
     source: Rect,
@@ -608,10 +690,10 @@ impl Draw for Tile {
     }
 }
 
+#[derive(Debug)]
 struct InstanceState {
     pos: DVec2,
     velocity: InstanceVelocity,
-    depth: u32,
     visible: bool,
     sprite_index: i32,
     sprite_asset: Option<AssetId<SpriteAsset>>,
@@ -620,6 +702,7 @@ struct InstanceState {
     image_blend_alpha: Color,
 }
 
+#[derive(Debug)]
 enum InstanceVelocity {
     Cartesian(DVec2),
     Polar(Polar),
@@ -691,7 +774,9 @@ impl InstanceVelocity {
     }
 }
 
+#[derive(Debug)]
 pub struct Instance {
+    depth: i32,
     state: RefCell<InstanceState>,
     object_index: u32,
     parent_object_index: Option<u32>,
@@ -765,24 +850,21 @@ impl Instance {
 impl Draw for Instance {
     fn draw(&self, global: &Global, view: &View) {
         let mut state = self.state.borrow_mut();
-        let sprite_asset = state.sprite_asset.or_else(|| {
+        if let Some(&mut sprite_asset) = state.sprite_index.try_into().ok().map(|index| {
             state
-                .sprite_index
-                .try_into()
-                .ok()
-                .map(|index| global.loader().get_sprite(index))
-        });
-        let Some(sprite_asset) = sprite_asset else { return };
+                .sprite_asset
+                .get_or_insert_with(|| global.loader().get_sprite(index))
+        }) {
+            let assets = global.assets.borrow();
+            let sprite = assets.sprites.get(sprite_asset);
 
-        let assets = global.assets.borrow();
-        let sprite = assets.sprites.get(sprite_asset);
+            let sprite_frame = state.image_index % sprite.textures.len() as f64;
+            state.image_index = sprite_frame;
 
-        let sprite_frame = (state.image_index as usize) % sprite.textures.len();
-        state.image_index = sprite_frame as f64;
-
-        let texture = sprite.textures[sprite_frame];
-        let pos = state.pos.as_vec2() + sprite.origin.as_vec2() - view.offset.as_vec2();
-        draw_texture(texture, pos.x, pos.y, state.image_blend_alpha);
+            let texture = sprite.textures[sprite_frame.floor() as usize];
+            let pos = state.pos.as_vec2() + sprite.origin.as_vec2() - view.offset.as_vec2();
+            draw_texture(texture, pos.x, pos.y, state.image_blend_alpha);
+        }
     }
 }
 
@@ -791,6 +873,7 @@ impl Object for Instance {
         // dbg!(name);
         let state = self.state.borrow();
         Ok(Some(match name {
+            "visible" => state.visible.into(),
             "x" => state.pos.x.into(),
             "y" => state.pos.y.into(),
             "alarm" => self.alarm_id.into(),
@@ -812,6 +895,7 @@ impl Object for Instance {
         // dbg!(name);
         let mut state = self.state.borrow_mut();
         match name {
+            "visible" => state.visible = value.to_bool(),
             "x" => state.pos.x = value.to_float(),
             "y" => state.pos.y = value.to_float(),
             "speed" => {
@@ -857,7 +941,7 @@ impl Object for Instance {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct InstanceAlarm {
     active: RefCell<HashMap<i32, i32>>,
 }

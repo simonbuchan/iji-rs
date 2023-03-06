@@ -18,6 +18,16 @@ impl<T> AssetId<T> {
     pub fn new(index: u32) -> Self {
         Self(index, PhantomData)
     }
+
+    pub fn index(&self) -> u32 {
+        self.0
+    }
+}
+
+impl<T> std::fmt::Debug for AssetId<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
 }
 
 // Need to manually impl Copy, Clone due to T parameter
@@ -109,7 +119,7 @@ impl Asset for BackgroundAsset {
 
     fn load(def: &gmk_file::Background) -> Self {
         let data = def.image.as_ref().unwrap().data.as_ref().unwrap();
-        let texture = Texture2D::from_file_with_format(data, None);
+        let texture = texture_from_data(data, def.transparent.into());
         // always present since GM 5.x
         let tiling = def.tiling.as_ref().unwrap();
 
@@ -144,24 +154,7 @@ impl Asset for SpriteAsset {
         let textures = def
             .subimages
             .iter()
-            .map(|image| {
-                let data = image.data.as_ref().unwrap();
-                let mut image = Image::from_file_with_format(data, None);
-
-                // the bottom left pixel is the transparent pixel color
-                if def.transparent.into() {
-                    let t: [u8; 4] = image.get_pixel(0, u32::from(image.height) - 1).into();
-                    let data = image.get_image_data_mut();
-
-                    for p in data {
-                        if *p == t {
-                            *p = [0, 0, 0, 0];
-                        }
-                    }
-                }
-
-                Texture2D::from_image(&image)
-            })
+            .map(|image| texture_from_data(image.data.as_ref().unwrap(), def.transparent.into()))
             .collect::<Vec<_>>();
 
         Self {
@@ -170,4 +163,22 @@ impl Asset for SpriteAsset {
             textures,
         }
     }
+}
+
+fn texture_from_data(data: &[u8], transparent: bool) -> Texture2D {
+    let mut image = Image::from_file_with_format(data, None);
+
+    // the bottom left pixel is the transparent pixel color
+    if transparent {
+        let t: [u8; 4] = image.get_pixel(0, u32::from(image.height) - 1).into();
+        let data = image.get_image_data_mut();
+
+        for p in data {
+            if *p == t {
+                *p = [0, 0, 0, 0];
+            }
+        }
+    }
+
+    Texture2D::from_image(&image)
 }

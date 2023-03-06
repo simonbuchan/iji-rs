@@ -404,7 +404,7 @@ pub struct Object {
     pub sprite_index: i32,
     pub solid: Bool32,
     pub visible: Bool32,
-    pub depth: u32,
+    pub depth: i32,
     pub persistent: Bool32,
     pub parent_object_index: i32,
     pub mask_sprite_index: i32,
@@ -864,7 +864,7 @@ pub struct RoomTile {
     pub background_index: u32,
     pub tile: U32x2,
     pub size: U32x2,
-    pub depth: u32,
+    pub depth: i32,
     pub id: u32,
     pub locked: Bool32,
 }
