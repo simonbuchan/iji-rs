@@ -117,28 +117,52 @@ impl FontAsset {
     }
 
     pub fn draw_text(&self, global: &Global, pos: IVec2, string: &str, sep: i32, w: i32) {
-        let wrap = pos.x + w;
         let assets = global.assets.borrow();
         let sprite = assets.sprites.get(self.sprite);
-        let mut p = pos;
-        for c in string.chars() {
-            let Ok(codepoint) = u32::try_from(c) else { continue };
-            let Some(index) = codepoint.checked_sub(self.first) else { continue };
-            let Ok(index) = usize::try_from(index) else { continue };
-            let Some(texture) = sprite.textures.get(index) else { continue };
 
-            let r = p.x + sprite.size.x as i32;
-            let dp;
-            if r <= wrap {
-                dp = p;
-                p.x = r;
-            } else {
-                p.x = pos.x;
-                p.y += sep;
-                dp = p;
+        let wrap_chars = w as usize / sprite.size.x as usize;
+
+        let chars = string
+            .chars()
+            .flat_map(|c| {
+                let is_space = c == ' ';
+                let codepoint = u32::try_from(c).ok()?;
+                let index = codepoint.checked_sub(self.first)?;
+                let index = usize::try_from(index).ok()?;
+                Some((is_space, index))
+            })
+            .collect::<Vec<_>>();
+
+        let mut lines = vec![];
+        let mut line_index = 0;
+        loop {
+            line_index += wrap_chars;
+            if line_index >= chars.len() {
+                lines.push(chars.len());
+                break;
+            }
+            // is_space
+            while !chars[line_index - 1].0 {
+                line_index -= 1;
+            }
+            lines.push(line_index);
+        }
+
+        let mut y = pos.y;
+        let mut start_index = 0;
+        for end_index in lines {
+            let mut x = pos.x;
+
+            for (_, index) in &chars[start_index..end_index] {
+                let Some(texture) = sprite.textures.get(*index) else { continue };
+
+                draw_texture(*texture, x as f32, y as f32, WHITE);
+                x += sprite.size.x as i32;
             }
 
-            draw_texture(*texture, dp.x as f32, dp.y as f32, WHITE);
+            start_index = end_index;
+
+            y += sep;
         }
     }
 }
@@ -263,21 +287,11 @@ impl Global {
     }
 
     pub fn cleanup(&self) {
-        // Also process room destroyed/added objects?
-        // Those should happen after each dispatch, but perhaps this should too.
         if let Some(next_room_index) = self.next_room_index.take() {
             self.goto_room(next_room_index);
+        } else {
+            self.room.borrow_mut().cleanup(self);
         }
-    }
-
-    pub fn add_instance(&self, instance: Rc<Instance>) -> u32 {
-        let id = self.next_instance_id();
-        self.room
-            .borrow()
-            .added_instances
-            .borrow_mut()
-            .insert(id, instance);
-        id
     }
 
     pub fn destroy_instance(&self, id: ObjectId) {
@@ -305,6 +319,7 @@ impl Global {
         let alarm_id = self.new_instance(alarm.clone());
 
         let instance = Rc::new(Instance {
+            id,
             depth: obj.depth,
             state: RefCell::new(InstanceState {
                 pos: pos.as_dvec2(),
@@ -519,9 +534,8 @@ impl Room {
         while *elapsed >= 1.0 {
             *elapsed -= 1.0;
             self.dispatch(global, Event::StepBegin);
-            for (&id, instance) in &self.object_instances.borrow().values {
-                let mut ctx = Context::new(global, ObjectId::new(id), instance.clone());
-                instance.step(global, &mut ctx);
+            for instance in self.object_instances.borrow().values.values() {
+                instance.clone().step(global);
             }
             self.dispatch(global, Event::StepNormal);
             self.dispatch(global, Event::StepEnd);
@@ -537,31 +551,30 @@ impl Room {
         let object_instances = self.object_instances.borrow();
         enum DrawItem<'a> {
             Tile(&'a Tile),
-            Instance(u32, Rc<Instance>),
+            Instance(Rc<Instance>),
         }
         let mut depth_draws = Vec::new();
         depth_draws.extend(self.tiles.iter().map(DrawItem::Tile));
         depth_draws.extend(
             object_instances
                 .values
-                .iter()
-                .filter(|(_, item)| {
+                .values()
+                .filter(|item| {
                     item.state.borrow().visible && (-16000..=16000).contains(&item.depth)
                 })
-                .map(|(id, item)| DrawItem::Instance(*id, item.clone())),
+                .map(|item| DrawItem::Instance(item.clone())),
         );
         depth_draws.sort_by_key(|item| match item {
             DrawItem::Tile(tile) => -tile.depth,
-            DrawItem::Instance(_, instance) => -instance.depth,
+            DrawItem::Instance(instance) => -instance.depth,
         });
 
         for draw in depth_draws {
             match draw {
                 DrawItem::Tile(tile) => tile.draw(global, &self.view),
-                DrawItem::Instance(id, instance) => {
+                DrawItem::Instance(instance) => {
                     instance.draw(global, &self.view);
-                    let mut ctx = Context::new(global, ObjectId::new(id), instance.clone());
-                    instance.dispatch(global, &mut ctx, Event::Draw);
+                    instance.dispatch(global, Event::Draw);
                 }
             }
         }
@@ -577,10 +590,13 @@ impl Room {
     }
 
     pub fn dispatch(&self, global: &Global, event: Event) {
-        for (id, instance) in &self.object_instances.borrow().values {
-            let mut ctx = Context::new(global, ObjectId::new(*id), instance.clone());
-            instance.dispatch(global, &mut ctx, event);
+        for instance in self.object_instances.borrow().values.values() {
+            instance.clone().dispatch(global, event);
         }
+        self.cleanup(global);
+    }
+
+    pub fn cleanup(&self, global: &Global) {
         for id in self.destroyed_instances.borrow_mut().drain(..) {
             if let Some(instance) = self
                 .object_instances
@@ -588,8 +604,7 @@ impl Room {
                 .values
                 .remove(&id.instance_id())
             {
-                let mut ctx = Context::new(global, id, instance.clone());
-                instance.dispatch(global, &mut ctx, Event::Destroy);
+                instance.clone().dispatch(global, Event::Destroy);
 
                 global.object_types[&instance.object_index]
                     .object
@@ -598,6 +613,7 @@ impl Room {
                     .remove(&id);
             }
         }
+
         self.object_instances
             .borrow_mut()
             .values
@@ -776,6 +792,7 @@ impl InstanceVelocity {
 
 #[derive(Debug)]
 pub struct Instance {
+    id: ObjectId,
     depth: i32,
     state: RefCell<InstanceState>,
     object_index: u32,
@@ -786,7 +803,7 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn step(&self, global: &Global, ctx: &mut Context<'_>) {
+    pub fn step(self: Rc<Self>, global: &Global) {
         {
             let mut state = self.state.borrow_mut();
             let mut state = &mut *state; // I have no idea.
@@ -806,11 +823,12 @@ impl Instance {
         });
 
         for alarm_id in alarm_ids {
-            self.dispatch(global, ctx, Event::Alarm(alarm_id));
+            self.clone().dispatch(global, Event::Alarm(alarm_id));
         }
     }
 
-    pub fn dispatch(&self, global: &Global, ctx: &mut Context<'_>, event: Event) {
+    pub fn dispatch(self: Rc<Self>, global: &Global, event: Event) {
+        let mut ctx = Context::new(global, self.id, self.clone());
         let obj = &global.object_types[&self.object_index];
         let Some(actions) = obj.events.get(&event) else { return };
         for action in actions {
@@ -862,7 +880,7 @@ impl Draw for Instance {
             state.image_index = sprite_frame;
 
             let texture = sprite.textures[sprite_frame.floor() as usize];
-            let pos = state.pos.as_vec2() + sprite.origin.as_vec2() - view.offset.as_vec2();
+            let pos = state.pos.as_vec2() - sprite.origin.as_vec2() - view.offset.as_vec2();
             draw_texture(texture, pos.x, pos.y, state.image_blend_alpha);
         }
     }

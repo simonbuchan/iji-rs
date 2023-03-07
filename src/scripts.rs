@@ -50,8 +50,6 @@ pub fn call(
         | "file_text_writeln"
         | "display_set_all"
         | "window_set_fullscreen"
-        | "draw_sprite"
-        | "draw_set_blend_mode"
         | "sound_loop"
         | "sound_stop"
         | "sound_stop_all"
@@ -138,6 +136,33 @@ pub fn call(
             Ok(().into())
         }
 
+        "draw_sprite" => {
+            let sprite_index = args[0].to_int();
+            let image_index = args[1].to_int();
+            let x = args[2].to_int();
+            let y = args[3].to_int();
+
+            let image_index = usize::try_from(image_index).ok().unwrap_or_else(|| {
+                context
+                    .instance
+                    .member("image_index")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_int() as usize
+            });
+
+            let sprite = global.loader().get_sprite(sprite_index as u32);
+            let assets = global.assets();
+            let sprite = assets.sprites.get(sprite);
+
+            draw_texture(sprite.textures[image_index], x as f32, y as f32, WHITE);
+
+            Ok(().into())
+        }
+
+        "draw_set_blend_mode" => Ok(().into()),
+
         "instance_create" => {
             let x = args[0].to_int();
             let y = args[1].to_int();
@@ -149,10 +174,7 @@ pub fn call(
             let id = global.next_instance_id();
             let id = gml::eval::ObjectId::new(id);
             let instance = global.instance_create(id, ivec2(x, y), object_index);
-
-            context.with_instance(id, instance.clone(), |context| {
-                instance.dispatch(global, context, Event::Create);
-            });
+            instance.dispatch(global, Event::Create);
 
             Ok(id.into())
         }
