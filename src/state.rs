@@ -7,6 +7,8 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicU32;
 
 use macroquad::prelude::*;
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
 
 use gml::eval::{Global as _, Object, ObjectId, Value};
 use gml::Context;
@@ -22,7 +24,7 @@ fn default<T: Default>() -> T {
     Default::default()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DoubleMap<V> {
     pub names: HashMap<String, u32>,
     pub values: HashMap<u32, V>,
@@ -76,9 +78,11 @@ impl Object for ObjectType {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 pub struct GlobalState {
+    #[serde(skip)]
     pub color: Color,
+    #[serde(skip)]
     pub fonts: FontMap,
 }
 
@@ -167,12 +171,15 @@ impl FontAsset {
     }
 }
 
+#[derive(Serialize)]
 pub struct Global {
+    #[serde(skip)]
     content: gmk_file::Content,
     assets: RefCell<Assets>,
     object_types: HashMap<u32, ObjectAsset>,
     consts: gml::eval::Namespace,
     vars: gml::eval::Namespace,
+    #[serde(skip)]
     scripts: DoubleMap<gml::ast::Script>,
     room_order_index: RefCell<usize>,
     room: RefCell<Room>,
@@ -426,20 +433,75 @@ impl gml::eval::Global for Global {
     }
 }
 
+#[derive(Serialize)]
 pub struct Room {
     view: View,
+    #[serde(skip)]
     background_color: Color,
     background_layers: Vec<Layer>,
     tiles: Vec<Tile>,
+    #[serde(serialize_with = "serialize_object_instances")]
     object_instances: RefCell<DoubleMap<Rc<Instance>>>,
     foreground_layers: Vec<Layer>,
     speed: f32,
     elapsed: RefCell<f32>,
 
+    #[serde(serialize_with = "serialize_script_instances")]
     script_instances: RefCell<HashMap<ObjectId, Rc<dyn Object>>>,
 
+    #[serde(skip)]
     added_instances: RefCell<HashMap<u32, Rc<Instance>>>,
+    #[serde(skip)]
     destroyed_instances: RefCell<Vec<ObjectId>>,
+}
+
+fn serialize_object_instances<S: Serializer>(
+    this: &RefCell<DoubleMap<Rc<Instance>>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    struct HashMapRcSerialize<'a>(&'a HashMap<u32, Rc<Instance>>);
+    impl Serialize for HashMapRcSerialize<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut map = serializer.serialize_map(Some(self.0.len()))?;
+            for (key, value) in self.0.iter() {
+                map.serialize_entry(&key, &**value)?
+            }
+            map.end()
+        }
+    }
+
+    let this = this.borrow();
+    let mut map = serializer.serialize_map(Some(2))?;
+    map.serialize_entry("names", &this.names)?;
+    map.serialize_entry("values", &HashMapRcSerialize(&this.values))?;
+    map.end()
+}
+
+fn serialize_script_instances<S: Serializer>(
+    this: &RefCell<HashMap<ObjectId, Rc<dyn Object>>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let this = this.borrow();
+    let mut map = serializer.serialize_map(Some(this.len()))?;
+    for (key, value) in this.iter() {
+        if let Some(names) = value.debug_member_names() {
+            let members = names
+                .into_iter()
+                .flat_map(|name| value.member(&name).map(|value| (name, value)))
+                .collect::<HashMap<_, _>>();
+
+            map.serialize_entry(&key, &members)?;
+        } else if let Some(length) = value.debug_index_length() {
+            let values = (0..length)
+                .map(|index| value.index(&[(index as i32).into()]).unwrap_or_default())
+                .collect::<Vec<_>>();
+
+            map.serialize_entry(&key, &values)?;
+        } else {
+            map.serialize_entry(&key, &())?;
+        }
+    }
+    map.end()
 }
 
 impl std::fmt::Debug for Room {
@@ -625,17 +687,21 @@ trait Draw {
     fn draw(&self, assets: &Global, view: &View);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct View {
+    #[serde(skip)]
     offset: IVec2,
+    #[serde(skip)]
     size: UVec2,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Layer {
     enabled: bool,
     asset: AssetId<BackgroundAsset>,
+    #[serde(skip)]
     pos: IVec2,
+    #[serde(skip)]
     source: Option<Rect>,
     tile: bool,
 }
@@ -682,11 +748,13 @@ impl Draw for Layer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Tile {
     depth: i32,
     asset: AssetId<BackgroundAsset>,
+    #[serde(skip)]
     pos: IVec2,
+    #[serde(skip)]
     source: Rect,
 }
 
@@ -706,8 +774,9 @@ impl Draw for Tile {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct InstanceState {
+    #[serde(skip)]
     pos: DVec2,
     velocity: InstanceVelocity,
     visible: bool,
@@ -715,12 +784,13 @@ struct InstanceState {
     sprite_asset: Option<AssetId<SpriteAsset>>,
     image_speed: f64,
     image_index: f64,
+    #[serde(skip)]
     image_blend_alpha: Color,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum InstanceVelocity {
-    Cartesian(DVec2),
+    Cartesian(#[serde(skip)] DVec2),
     Polar(Polar),
 }
 
@@ -730,7 +800,7 @@ impl Default for InstanceVelocity {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize)]
 struct Polar {
     pub length: f64,
     pub direction: f64,
@@ -790,7 +860,7 @@ impl InstanceVelocity {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Instance {
     id: ObjectId,
     depth: i32,
@@ -799,6 +869,7 @@ pub struct Instance {
     parent_object_index: Option<u32>,
     vars: gml::eval::Namespace,
     alarm_id: ObjectId,
+    #[serde(skip)]
     alarm: Rc<InstanceAlarm>,
 }
 
@@ -959,7 +1030,7 @@ impl Object for Instance {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize)]
 struct InstanceAlarm {
     active: RefCell<HashMap<i32, i32>>,
 }
@@ -1178,13 +1249,15 @@ fn define_objects(content: &gmk_file::Content) -> HashMap<u32, ObjectAsset> {
     result
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct ObjectAsset {
+    #[serde(skip)]
     pub object: Rc<ObjectType>,
+    #[serde(skip)]
     pub events: HashMap<Event, Vec<Action>>,
 }
 
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize)]
 pub enum Event {
     Create,
     StepBegin,
@@ -1193,12 +1266,13 @@ pub enum Event {
     Draw,
     Alarm(i32),
     Destroy,
-    KeyPress(KeyCode),
-    KeyRelease(KeyCode),
-    KeyDown(KeyCode),
+    KeyPress(#[serde(skip)] KeyCode),
+    KeyRelease(#[serde(skip)] KeyCode),
+    KeyDown(#[serde(skip)] KeyCode),
     Collision(i32),
 }
 
+#[derive(Serialize)]
 enum Action {
     ScriptInline(gml::Script),
     ScriptRes(u32),

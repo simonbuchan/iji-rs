@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use serde::Serialize;
 
 #[allow(unused_variables)]
 pub trait Visitor {
@@ -14,7 +15,7 @@ pub trait Visitor {
     fn var(&mut self, value: &Var) {}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Script {
     pub name: String,
     pub stmts: Vec<Box<Stmt>>,
@@ -28,7 +29,7 @@ impl Script {
     }
 }
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Serialize)]
 pub struct Pos {
     pub line: usize,
     pub column: usize,
@@ -46,7 +47,7 @@ impl From<(usize, usize)> for Pos {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Stmt {
     Var(String),
     Assign {
@@ -182,7 +183,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Assign {
     pub lhs: Box<Expr>,
     pub op: AssignOp,
@@ -205,7 +206,7 @@ impl Display for Assign {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Var {
     Local(String),
     Global(String),
@@ -220,7 +221,7 @@ impl Display for Var {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum AssignOp {
     Assign,
     AddAssign,
@@ -241,7 +242,7 @@ impl Display for AssignOp {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Expr {
     Var(Var),
     Int(i32),
@@ -306,7 +307,7 @@ impl Expr {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum UnaryOp {
     Not,
     Pos,
@@ -333,7 +334,7 @@ impl Display for UnaryOp {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum BinaryOp {
     And,
     Or,

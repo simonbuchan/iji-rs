@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -62,7 +63,7 @@ impl<T> ResultExt<T> for Result<T> {
 /// Values are any possible immutable result of evaluating an expression.
 /// They cannot explicitly reference an object, but may contain an integer
 /// that can be coerced to an object id in the context of an assignment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Value {
     Undefined,
     Bool(bool),
@@ -312,7 +313,7 @@ pub enum Place {
     Index(Box<Place>, Vec<Value>),
 }
 
-#[derive(Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize)]
 pub struct ObjectId(i32);
 
 impl ObjectId {
@@ -355,12 +356,20 @@ pub trait Global: 'static {
 
 #[allow(unused_variables)]
 pub trait Object: 'static {
+    fn debug_member_names(&self) -> Option<Vec<String>> {
+        None
+    }
+
     fn member(&self, name: &str) -> Result<Option<Value>> {
         Ok(None)
     }
 
     fn set_member(&self, name: &str, value: Value) -> Result {
         Ok(())
+    }
+
+    fn debug_index_length(&self) -> Option<usize> {
+        None
     }
 
     fn index(&self, args: &[Value]) -> Result<Option<Value>> {
@@ -372,7 +381,7 @@ pub trait Object: 'static {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct Namespace {
     vars: RefCell<HashMap<String, Value>>,
 }
@@ -394,6 +403,10 @@ impl std::fmt::Debug for Namespace {
 }
 
 impl Object for Namespace {
+    fn debug_member_names(&self) -> Option<Vec<String>> {
+        Some(self.vars.borrow().keys().cloned().collect())
+    }
+
     fn member(&self, name: &str) -> Result<Option<Value>> {
         Ok(self.get(name))
     }
@@ -410,6 +423,10 @@ pub struct Array {
 }
 
 impl Object for Array {
+    fn debug_index_length(&self) -> Option<usize> {
+        Some(self.items.borrow().len())
+    }
+
     fn index(&self, args: &[Value]) -> Result<Option<Value>> {
         let index = args.get(0).cloned().unwrap_or_default().to_int();
         Ok(index

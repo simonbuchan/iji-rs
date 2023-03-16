@@ -10,4 +10,5 @@ anyhow = "1.0.69"
 pest = "2.5.5"
 pest_derive = "2.5.5"
 polonius_workaround = "0.1.0"
+serde = { version = "1.0.152", features = ["derive"]}
 thiserror = "1.0.38"

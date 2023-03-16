@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Iji.rs debugger</title>
+    <script type="module">
+      const output = document.getElementById("output");
+
+      async function refresh() {
+        const res = await fetch("/state")
+        output.innerText = JSON.stringify(await res.json(), null, 2);
+      }
+
+      document.getElementById("refresh").addEventListener("click", refresh);
+      refresh();
+    </script>
+    <style>
+        output {
+            display: block;
+            font-family: monospace;
+            white-space: pre;
+        }
+    </style>
+
+</head>
+<body>
+<h2>Iji Debugger</h2>
+
+<button id="refresh">Refresh</button>
+
+<output id="output"></output>
+</body>
+</html>

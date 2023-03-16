@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use macroquad::prelude::*;
+use serde::{Serialize, Serializer};
 
 pub trait Asset {
     type Resource;
@@ -12,15 +13,17 @@ pub trait Asset {
 
 pub struct AssetId<T>(u32, PhantomData<T>);
 
+impl<T> Serialize for AssetId<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        serializer.serialize_newtype_struct("AssetId", &self.0)
+    }
+}
+
 impl<T> AssetId<T> {}
 
 impl<T> AssetId<T> {
     pub fn new(index: u32) -> Self {
         Self(index, PhantomData)
-    }
-
-    pub fn index(&self) -> u32 {
-        self.0
     }
 }
 
@@ -39,6 +42,7 @@ impl<T> Clone for AssetId<T> {
 
 impl<T> Copy for AssetId<T> {}
 
+#[derive(Serialize)]
 pub struct AssetSet<T> {
     indices: HashMap<String, u32>,
     items: HashMap<u32, (String, T)>,
@@ -69,7 +73,7 @@ impl<T: Asset> AssetSet<T> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct Assets {
     pub backgrounds: AssetSet<BackgroundAsset>,
     pub sprites: AssetSet<SpriteAsset>,
@@ -100,11 +104,16 @@ impl<'a> Loader<'a> {
     }
 }
 
+#[derive(Serialize)]
 pub struct BackgroundAsset {
+    #[serde(skip)]
     pub texture: Texture2D,
+    #[serde(skip)]
     pub size: UVec2,
     pub tile_enabled: bool,
+    #[serde(skip)]
     pub tile_pos: UVec2,
+    #[serde(skip)]
     pub tile_size: UVec2,
 }
 
@@ -133,9 +142,13 @@ impl Asset for BackgroundAsset {
     }
 }
 
+#[derive(Serialize)]
 pub struct SpriteAsset {
+    #[serde(skip)]
     pub size: UVec2,
+    #[serde(skip)]
     pub origin: IVec2,
+    #[serde(skip)]
     pub textures: Vec<Texture2D>,
 }
 
