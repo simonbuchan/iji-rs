@@ -10,6 +10,7 @@ gml = { path = "gml" }
 gmk-file = { path = "gmk-file" }
 
 anyhow = "1.0.69"
+glam = { version = "0.21.3", features = ["serde"] }
 image = { version = "0.24.5", features = ["bmp"] }
 macroquad = "0.3.25"
 rayon = "1.6.1"

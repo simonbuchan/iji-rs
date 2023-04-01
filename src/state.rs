@@ -7,7 +7,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicU32;
 
 use macroquad::prelude::*;
-use serde::ser::SerializeMap;
+use serde::ser::{SerializeMap, SerializeStruct};
 use serde::{Serialize, Serializer};
 
 use gml::eval::{Global as _, Object, ObjectId, Value};
@@ -60,6 +60,20 @@ struct ObjectType {
     instances: RefCell<HashMap<ObjectId, Rc<Instance>>>,
 }
 
+impl Serialize for ObjectType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_struct("ObjectType", 1)?;
+        s.serialize_field(
+            "instances",
+            &self.instances.borrow().keys().collect::<Vec<_>>(),
+        )?;
+        s.end()
+    }
+}
+
 impl Object for ObjectType {
     fn member(&self, name: &str) -> gml::eval::Result<Option<Value>> {
         let b = self.instances.borrow();
@@ -80,7 +94,7 @@ impl Object for ObjectType {
 
 #[derive(Default, Debug, Serialize)]
 pub struct GlobalState {
-    #[serde(skip)]
+    #[serde(serialize_with = "serialize_color")]
     pub color: Color,
     #[serde(skip)]
     pub fonts: FontMap,
@@ -220,6 +234,10 @@ impl Global {
         }
     }
 
+    pub fn content(&self) -> &gmk_file::Content {
+        &self.content
+    }
+
     pub fn loader(&self) -> Loader<'_> {
         Loader::new(&self.content, &self.assets)
     }
@@ -271,7 +289,9 @@ impl Global {
             std::mem::take(&mut room.added_instances.borrow_mut());
 
         // hack to work around obj_menuback Step event script spamming errors.
-        let dummy = self.new_instance(Rc::<gml::eval::Namespace>::default());
+        let face_dummy = Rc::<gml::eval::Namespace>::default();
+        face_dummy.insert("count", 0);
+        let dummy = self.new_instance(face_dummy);
         self.vars.insert("face", dummy);
 
         self.dispatch(Event::Create);
@@ -327,9 +347,9 @@ impl Global {
 
         let instance = Rc::new(Instance {
             id,
-            depth: obj.depth,
             state: RefCell::new(InstanceState {
                 pos: pos.as_dvec2(),
+                depth: obj.depth,
                 velocity: default(),
                 visible: obj.visible.into(),
                 sprite_index: obj.sprite_index,
@@ -436,7 +456,7 @@ impl gml::eval::Global for Global {
 #[derive(Serialize)]
 pub struct Room {
     view: View,
-    #[serde(skip)]
+    #[serde(serialize_with = "serialize_color")]
     background_color: Color,
     background_layers: Vec<Layer>,
     tiles: Vec<Tile>,
@@ -622,13 +642,14 @@ impl Room {
                 .values
                 .values()
                 .filter(|item| {
-                    item.state.borrow().visible && (-16000..=16000).contains(&item.depth)
+                    let state = item.state.borrow();
+                    state.visible && (-16000..=16000).contains(&state.depth)
                 })
                 .map(|item| DrawItem::Instance(item.clone())),
         );
         depth_draws.sort_by_key(|item| match item {
             DrawItem::Tile(tile) => -tile.depth,
-            DrawItem::Instance(instance) => -instance.depth,
+            DrawItem::Instance(instance) => -instance.state.borrow().depth,
         });
 
         for draw in depth_draws {
@@ -689,9 +710,7 @@ trait Draw {
 
 #[derive(Debug, Serialize)]
 struct View {
-    #[serde(skip)]
     offset: IVec2,
-    #[serde(skip)]
     size: UVec2,
 }
 
@@ -699,7 +718,6 @@ struct View {
 struct Layer {
     enabled: bool,
     asset: AssetId<BackgroundAsset>,
-    #[serde(skip)]
     pos: IVec2,
     #[serde(skip)]
     source: Option<Rect>,
@@ -752,10 +770,19 @@ impl Draw for Layer {
 struct Tile {
     depth: i32,
     asset: AssetId<BackgroundAsset>,
-    #[serde(skip)]
     pos: IVec2,
-    #[serde(skip)]
+    #[serde(serialize_with = "serialize_rect")]
     source: Rect,
+}
+
+fn serialize_rect<S>(value: &Rect, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut s = serializer.serialize_struct("Rect", 2)?;
+    s.serialize_field("point", &value.point())?;
+    s.serialize_field("size", &value.size())?;
+    s.end()
 }
 
 impl Draw for Tile {
@@ -776,21 +803,33 @@ impl Draw for Tile {
 
 #[derive(Debug, Serialize)]
 struct InstanceState {
-    #[serde(skip)]
     pos: DVec2,
+    depth: i32,
     velocity: InstanceVelocity,
     visible: bool,
     sprite_index: i32,
     sprite_asset: Option<AssetId<SpriteAsset>>,
     image_speed: f64,
     image_index: f64,
-    #[serde(skip)]
+    #[serde(serialize_with = "serialize_color")]
     image_blend_alpha: Color,
+}
+
+fn serialize_color<S>(value: &Color, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut s = serializer.serialize_struct("Color", 4)?;
+    s.serialize_field("r", &value.r)?;
+    s.serialize_field("g", &value.g)?;
+    s.serialize_field("b", &value.b)?;
+    s.serialize_field("a", &value.a)?;
+    s.end()
 }
 
 #[derive(Debug, Serialize)]
 enum InstanceVelocity {
-    Cartesian(#[serde(skip)] DVec2),
+    Cartesian(DVec2),
     Polar(Polar),
 }
 
@@ -863,7 +902,6 @@ impl InstanceVelocity {
 #[derive(Debug, Serialize)]
 pub struct Instance {
     id: ObjectId,
-    depth: i32,
     state: RefCell<InstanceState>,
     object_index: u32,
     parent_object_index: Option<u32>,
@@ -900,8 +938,22 @@ impl Instance {
 
     pub fn dispatch(self: Rc<Self>, global: &Global, event: Event) {
         let mut ctx = Context::new(global, self.id, self.clone());
-        let obj = &global.object_types[&self.object_index];
-        let Some(actions) = obj.events.get(&event) else { return };
+
+        // implicit inheritance
+        let mut object_index = self.object_index;
+        let actions = loop {
+            let obj = &global.object_types[&object_index];
+
+            if let Some(a) = obj.events.get(&event) {
+                break a;
+            };
+            if let Some(i) = obj.parent_index {
+                object_index = i;
+            } else {
+                return;
+            }
+        };
+
         for action in actions {
             match action {
                 Action::ScriptInline(script) => {
@@ -963,6 +1015,7 @@ impl Object for Instance {
         let state = self.state.borrow();
         Ok(Some(match name {
             "visible" => state.visible.into(),
+            "depth" => state.depth.into(),
             "x" => state.pos.x.into(),
             "y" => state.pos.y.into(),
             "alarm" => self.alarm_id.into(),
@@ -985,6 +1038,7 @@ impl Object for Instance {
         let mut state = self.state.borrow_mut();
         match name {
             "visible" => state.visible = value.to_bool(),
+            "depth" => state.depth = value.to_int(),
             "x" => state.pos.x = value.to_float(),
             "y" => state.pos.y = value.to_float(),
             "speed" => {
@@ -1174,7 +1228,11 @@ fn define_objects(content: &gmk_file::Content) -> HashMap<u32, ObjectAsset> {
     let mut result = HashMap::new();
 
     for (object_index, name, def) in &content.objects {
-        let mut object = ObjectAsset::default();
+        let mut object = ObjectAsset {
+            name: name.to_string(),
+            parent_index: def.parent_object_index.try_into().ok(),
+            ..Default::default()
+        };
 
         for (event_id, event) in &def.events {
             object.events.insert(
@@ -1249,12 +1307,26 @@ fn define_objects(content: &gmk_file::Content) -> HashMap<u32, ObjectAsset> {
     result
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default)]
 struct ObjectAsset {
-    #[serde(skip)]
+    pub name: String,
     pub object: Rc<ObjectType>,
-    #[serde(skip)]
     pub events: HashMap<Event, Vec<Action>>,
+    pub parent_index: Option<u32>,
+}
+
+impl Serialize for ObjectAsset {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_struct("ObjectAsset", 1)?;
+        s.serialize_field("name", &self.name)?;
+        s.serialize_field("object", &*self.object)?;
+        s.skip_field("events")?;
+        s.serialize_field("parent_index", &self.parent_index)?;
+        s.end()
+    }
 }
 
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize)]

@@ -56,6 +56,19 @@ pub fn call(
         | "keyboard_set_map"
         | "keyboard_unset_map" => Ok(().into()),
 
+        "place_meeting" => {
+            let _x = args[0].to_int();
+            let _y = args[1].to_int();
+            let _id = args[1].to_int();
+            Ok(true.into())
+        }
+
+        "place_free" => {
+            let _x = args[0].to_int();
+            let _y = args[1].to_int();
+            Ok(true.into())
+        }
+
         "room_goto_next" => {
             global.room_goto_next();
             Ok(().into())

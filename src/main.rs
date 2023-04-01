@@ -1,6 +1,7 @@
 #![deny(rust_2018_idioms)]
 
 use macroquad::prelude::*;
+
 use state::Event;
 
 mod assets;
@@ -58,11 +59,14 @@ async fn run_main(content: gmk_file::Content) {
 }
 
 mod debug {
-    use crate::state::Global;
     use std::io::Read;
     use std::net::Ipv4Addr;
+    use std::str::FromStr;
     use std::{fs, io};
-    use tiny_http::{Response, ResponseBox};
+
+    use tiny_http::{Header, Response, ResponseBox};
+
+    use crate::state::Global;
 
     pub struct Server(tiny_http::Server);
 
@@ -76,27 +80,60 @@ mod debug {
         pub fn pump(&mut self, global: &Global) -> io::Result<()> {
             while let Some(req) = self.0.try_recv()? {
                 match req.url() {
-                    "/" => req.respond(index())?,
+                    "/" => req.respond(file("index.html", b"text/html"))?,
                     "/state" => req.respond(state(global))?,
-                    _ => req.respond(tiny_http::Response::from_string("not found"))?,
+                    url => {
+                        if let Some(index) = url.strip_prefix("/sprite/") {
+                            if let Some((sprite_index, image_index)) = index.split_once('/') {
+                                if let (Ok(sprite_index), Ok(image_index)) =
+                                    (usize::from_str(sprite_index), usize::from_str(image_index))
+                                {
+                                    let items = &global.content().sprites.items;
+                                    if let Some(Some(item)) = items.get(sprite_index) {
+                                        if let Some(image) = item.data.subimages.get(image_index) {
+                                            if let Some(data) = &image.data {
+                                                return req.respond(
+                                                    Response::from_data(data.clone())
+                                                        .with_header(type_header(b"image/bmp")),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            return req.respond(Response::empty(404));
+                        }
+                        let res = file(url.strip_prefix('/').unwrap(), {
+                            if url.ends_with(".mjs") {
+                                b"application/javascript"
+                            } else {
+                                b"application/octet-stream"
+                            }
+                        });
+                        req.respond(res)?
+                    }
                 }
             }
             Ok(())
         }
     }
 
-    fn index() -> ResponseBox {
-        let Ok(file) = fs::File::open("src/index.html") else {
-            return Response::new_empty(404.into()).boxed()
+    fn file(path: &str, content_type: &[u8]) -> ResponseBox {
+        let path = std::path::Path::new("debug-static").join(path);
+        let Ok(file) = fs::File::open(path) else {
+            return Response::empty(404).boxed()
         };
         Response::from_file(file)
-            .with_header(tiny_http::Header::from_bytes(*b"Content-Type", *b"text/html").unwrap())
+            .with_header(type_header(content_type))
             .boxed()
     }
 
     fn state(global: &Global) -> Response<impl Read> {
-        tiny_http::Response::from_string(serde_json::to_string(global).unwrap()).with_header(
-            tiny_http::Header::from_bytes(*b"Content-Type", *b"application/json").unwrap(),
-        )
+        tiny_http::Response::from_string(serde_json::to_string(global).unwrap())
+            .with_header(type_header(b"application/json"))
+    }
+
+    fn type_header(value: &[u8]) -> Header {
+        Header::from_bytes(*b"Content-Type", value).unwrap()
     }
 }
