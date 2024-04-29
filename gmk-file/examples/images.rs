@@ -17,7 +17,7 @@ fn main() {
                 )) => {
                     println!(
                         "{name}[{i}] = {width}x{height}x{bitcount} ({image_type}) {:?}",
-                        &data[..12]
+                        data.chunks(12).next().unwrap_or_default(),
                     );
                 }
                 Err(error) => {
