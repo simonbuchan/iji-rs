@@ -23,7 +23,7 @@ pub enum Error {
     AssignToValue,
     #[error("function {0:?} has no definition")]
     UndefinedFunction(String),
-    #[error("invalid bool {0}")]
+    #[error("invalid operands {0} {0}")]
     InvalidOperands(Value, Value),
     #[error("invalid bool {0}")]
     InvalidBool(Value),
@@ -190,6 +190,11 @@ impl Value {
             Self::String(value) => value.clone(),
         }
     }
+
+    pub fn try_to_object_id(&self) -> Result<ObjectId> {
+        self.as_object_id()
+            .ok_or_else(|| Error::InvalidObject(self.clone()))
+    }
 }
 
 impl Default for Value {
@@ -319,6 +324,10 @@ pub struct ObjectId(i32);
 impl ObjectId {
     const GLOBAL: Self = Self(0);
     const LOCAL: Self = Self(-1);
+    const SELF: Self = Self(-2);
+    const OTHER: Self = Self(-3);
+    const ALL: Self = Self(-4);
+    const NOONE: Self = Self(-5);
 
     pub fn new(id: u32) -> Self {
         Self(id.try_into().expect("invalid object id"))
@@ -331,12 +340,18 @@ impl ObjectId {
 
 impl std::fmt::Debug for ObjectId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if *self == Self::GLOBAL {
-            write!(f, "<global>")
-        } else if *self == Self::LOCAL {
-            write!(f, "<local>")
-        } else {
+        if self.0 > 0 {
             write!(f, "<#{}>", self.0)
+        } else {
+            match *self {
+                Self::GLOBAL => write!(f, "<global>"),
+                Self::LOCAL => write!(f, "<local>"),
+                Self::SELF => write!(f, "<self>"),
+                Self::OTHER => write!(f, "<other>"),
+                Self::ALL => write!(f, "<all>"),
+                Self::NOONE => write!(f, "<noone>"),
+                _ => write!(f, "<invalid {}>", self.0),
+            }
         }
     }
 }
