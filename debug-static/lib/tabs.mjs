@@ -13,66 +13,70 @@ function classMap(parts) {
 
 class TabSet extends LitElement {
   static properties = {
-    vertical: { type: Boolean },
+    vertical: { type: Boolean }
   };
 
   static styles = css`
-    :host, .content {
-      display: flex;
-      flex-flow: column;
-    }
+      :host,
+      .content {
+          display: flex;
+          flex-flow: column;
+          min-height: 0;
+          min-width: 0;
+      }
 
-    :host([vertical]) {
-      flex-flow: row;
-    }
+      :host([vertical]) {
+          flex-flow: row;
+      }
 
-    :host {
-      --color-line: #dedede;
-      --color-inactive: #f1f1f1;
-      gap: -1px;
-    }
+      :host {
+          --color-line: #dedede;
+          --color-inactive: #f1f1f1;
+      }
 
-    :not(:defined) {
-      display: none;
-    }
+      :not(:defined) {
+          display: none;
+      }
 
-    .tab-scroll {
-      display: flex;
-      overflow: auto;
-      flex: none;
-    }
+      .tab-scroll {
+          display: flex;
+          flex: none;
+          min-height: 0;
+          min-width: 0;
+      }
 
-    .tab-bar {
-      min-width: 0;
-      min-height: 0;
-      display: flex;
-      gap: -1px;
-    }
+      .tab-bar {
+          min-width: 0;
+          min-height: 0;
+          display: flex;
+          overflow: auto;
+      }
 
-    .tab-scroll.vertical, .tab-scroll.vertical>.tab-bar {
-      flex-flow: column;
-    }
+      .tab-scroll.vertical,
+      .tab-scroll.vertical > .tab-bar {
+          flex-flow: column;
+      }
 
-    .content {
-      min-width: 0;
-      min-height: 0;
-      overflow: auto;
-      border: 1px solid var(--color-line);
-      padding: 15px;
-    }
+      .content {
+          min-width: 0;
+          min-height: 0;
+          overflow: auto;
+          border: 1px solid var(--color-line);
+          padding: 15px;
+      }
 
-    .tab {
-      display: block;
-      user-select: none;
-      background: var(--color-inactive);
-      border: 1px solid var(--color-line);
-      padding: 10px 15px;
-    }
+      .tab {
+          display: block;
+          user-select: none;
+          background: var(--color-inactive);
+          border: 1px solid var(--color-line);
+          padding: 10px 15px;
+      }
 
-    .tab-selected {
-      background: white;
-      border-bottom: 0;
-    }
+      .tab-selected {
+          background: white;
+          border-bottom: 0;
+      }
   `;
 
   getTabs() {
@@ -90,21 +94,26 @@ class TabSet extends LitElement {
   firstUpdated() {
     super.firstUpdated();
     const tabs = this.getTabs();
-    tabs.find(tab => tab.selected) || this.selectTab(tabs[0]);
+    tabs.find((tab) => tab.selected) || this.selectTab(tabs[0]);
   }
 
   render() {
     return html`
       <div class="${classMap({ "tab-scroll": true, vertical: this.vertical })}">
+        <slot name="tab-bar-before"></slot>
         <nav class="tab-bar">
-          ${this.getTabs().map(tab => html`
-            <span class="${classMap({ tab: true, "tab-selected": tab.selected })}"
-                  @click="${() => this.selectTab(tab)}">
-              ${tab.title}
-            </span>
-          `)}
+          ${this.getTabs().map(
+            (tab) => html`
+              <span
+                class="${classMap({ tab: true, "tab-selected": tab.selected })}"
+                @click="${() => this.selectTab(tab)}"
+              >
+                ${tab.title}
+              </span>
+            `
+          )}
         </nav>
-        <slot name="tab-bar-extra"></slot>
+        <slot name="tab-bar-after"></slot>
       </div>
 
       <slot class="content" @slotchange="${() => this.requestUpdate()}"></slot>
@@ -118,14 +127,18 @@ class Tab extends LitElement {
     selected: { type: Boolean, reflect: true }
   };
 
+  static styles = css`
+      :host(:not([selected])) {
+          display: none;
+      }
+
+      :host([selected]) {
+          display: contents;
+      }
+  `;
+
   render() {
     return html`
-      <style>
-        :host(:not([selected])) {
-          display: none;
-        }
-      </style>
-
       <slot></slot>
     `;
   }
@@ -133,4 +146,3 @@ class Tab extends LitElement {
 
 customElements.define("d-tab", Tab);
 customElements.define("d-tab-set", TabSet);
-

@@ -91,6 +91,7 @@ export interface Instance {
 export interface InstanceState {
   pos: Vec2;
   visible: boolean;
+  sprite_asset: number | null;
   sprite_index: number;
   image_speed: number;
   image_index: number;

@@ -106,6 +106,8 @@ mod debug {
                         let res = file(url.strip_prefix('/').unwrap(), {
                             if url.ends_with(".mjs") {
                                 b"application/javascript"
+                            } else if url.ends_with(".css") {
+                                b"text/css"
                             } else {
                                 b"application/octet-stream"
                             }
@@ -121,7 +123,7 @@ mod debug {
     fn file(path: &str, content_type: &[u8]) -> ResponseBox {
         let path = std::path::Path::new("debug-static").join(path);
         let Ok(file) = fs::File::open(path) else {
-            return Response::empty(404).boxed()
+            return Response::empty(404).boxed();
         };
         Response::from_file(file)
             .with_header(type_header(content_type))

@@ -1,0 +1,13 @@
+html {
+    height: 100vh;
+}
+
+html, body, app-root {
+    display: flex;
+    flex-flow: column;
+    min-height: 0;
+}
+
+h2 {
+    margin: 0;
+}
