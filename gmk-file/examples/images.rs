@@ -2,7 +2,9 @@ fn main() {
     let content = gmk_file::parse("ref/source code/iji.gmk");
     for (_, name, res) in &content.sprites {
         for (i, image) in res.subimages.iter().enumerate() {
-            let Some(result) = image.parse() else { continue };
+            let Some(result) = image.parse() else {
+                continue;
+            };
             match result {
                 Ok((
                     _,

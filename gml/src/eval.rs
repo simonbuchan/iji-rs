@@ -437,7 +437,7 @@ impl Object for Array {
 
     fn set_index(&self, args: &[Value], value: Value) -> Result {
         let Ok(index) = args.get(0).cloned().unwrap_or_default().to_int().try_into() else {
-            return Ok(())
+            return Ok(());
         };
         let mut items = self.items.borrow_mut();
 

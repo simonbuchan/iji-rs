@@ -79,7 +79,7 @@ impl Object for ObjectType {
         let b = self.instances.borrow();
         // grab any instance
         let Some((_, instance)) = b.iter().next() else {
-            return Ok(None)
+            return Ok(None);
         };
         instance.member(name)
     }
@@ -172,7 +172,9 @@ impl FontAsset {
             let mut x = pos.x;
 
             for (_, index) in &chars[start_index..end_index] {
-                let Some(texture) = sprite.textures.get(*index) else { continue };
+                let Some(texture) = sprite.textures.get(*index) else {
+                    continue;
+                };
 
                 draw_texture(*texture, x as f32, y as f32, WHITE);
                 x += sprite.size.x as i32;
@@ -874,7 +876,9 @@ impl InstanceVelocity {
             Self::Cartesian(result) => result,
             Self::Polar(polar) => {
                 *self = Self::Cartesian((*polar).into());
-                let Self::Cartesian(result) = self else { unreachable!() };
+                let Self::Cartesian(result) = self else {
+                    unreachable!()
+                };
                 result
             }
         }
@@ -892,7 +896,9 @@ impl InstanceVelocity {
             Self::Polar(result) => result,
             Self::Cartesian(cartesian) => {
                 *self = Self::Polar((*cartesian).into());
-                let Self::Polar(result) = self else { unreachable!() };
+                let Self::Polar(result) = self else {
+                    unreachable!()
+                };
                 result
             }
         }
