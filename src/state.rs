@@ -128,7 +128,7 @@ pub struct Tile {
     pub source: Rect,
 }
 
-fn serialize_rect<S>(value: &Rect, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_rect<S>(value: &Rect, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {

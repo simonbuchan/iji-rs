@@ -201,11 +201,10 @@ impl Room {
             {
                 instance.clone().dispatch(global, Event::Destroy);
 
-                global.object_types[&instance.object_index]
-                    .object
-                    .instances
-                    .borrow_mut()
-                    .remove(&id);
+                let object_type = &global.object_types[&instance.object_index];
+                object_type.object.instances.borrow_mut().remove(&id);
+            } else {
+                println!("cleanup instance not found: {:?}", id);
             }
         }
 

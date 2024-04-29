@@ -319,15 +319,15 @@ pub enum Place {
 }
 
 #[derive(Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq, Serialize)]
-pub struct ObjectId(i32);
+pub struct ObjectId(pub i32);
 
 impl ObjectId {
-    const GLOBAL: Self = Self(0);
-    const LOCAL: Self = Self(-1);
-    const SELF: Self = Self(-2);
-    const OTHER: Self = Self(-3);
-    const ALL: Self = Self(-4);
-    const NOONE: Self = Self(-5);
+    pub const GLOBAL: Self = Self(0);
+    pub const LOCAL: Self = Self(-1);
+    pub const SELF: Self = Self(-2);
+    pub const OTHER: Self = Self(-3);
+    pub const ALL: Self = Self(-4);
+    pub const NOONE: Self = Self(-5);
 
     pub fn new(id: u32) -> Self {
         Self(id.try_into().expect("invalid object id"))
@@ -361,6 +361,8 @@ pub trait Global: 'static {
     fn get(&self, name: &str) -> Result<Option<Value>>;
 
     fn set(&self, name: &str, value: Value) -> Result;
+
+    fn instances_all(&self, id: ObjectId) -> Vec<Rc<dyn Object>>;
 
     fn instance(&self, id: ObjectId) -> Option<Rc<dyn Object>>;
 
@@ -688,12 +690,11 @@ impl<'a> Context<'a> {
                 }
             }
             ast::Stmt::With { obj, body } => {
-                // todo: obj can be a *set* of objects, which this then loops over.
-                //       this is used by Iji at least in the scr_firekey "null driver" weapon.
                 let value = self.eval(obj)?;
                 let id = value.as_object_id().ok_or(Error::InvalidObject(value))?;
-                let new_instance = self.instance(id)?;
-                self.with_instance(id, new_instance, |ctx| ctx.exec(body))?;
+                for instance in self.global.instances_all(id) {
+                    self.with_instance(id, instance, |ctx| ctx.exec(body))?;
+                }
             }
             ast::Stmt::Return { expr } => {
                 let value = self.eval(expr)?;

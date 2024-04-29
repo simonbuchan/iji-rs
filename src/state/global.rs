@@ -110,6 +110,9 @@ impl Global {
         // drop mut borrow because instance_create() wants to borrow room
         drop(room);
 
+        for object_type in self.object_types.values() {
+            object_type.object.instances.borrow_mut().clear();
+        }
         for res in &def.instances {
             assert_eq!(&*res.creation_code, "");
             self.instance_create(
@@ -156,7 +159,13 @@ impl Global {
     }
 
     pub fn destroy_instance(&self, id: ObjectId) {
-        self.room.borrow().destroy_instance(id);
+        if let Some(object_type) = self.object_types.get(&id.instance_id()) {
+            for instance in object_type.object.instances.borrow().values() {
+                self.room.borrow().destroy_instance(instance.id);
+            }
+        } else {
+            self.room.borrow().destroy_instance(id);
+        }
     }
 
     pub fn instance_number(&self, object_index: u32) -> i32 {
@@ -231,6 +240,24 @@ impl gml::eval::Global for Global {
             Err(gml::eval::Error::AssignToValue)
         } else {
             self.vars.set_member(name, value)
+        }
+    }
+
+    fn instances_all(&self, id: ObjectId) -> Vec<Rc<dyn Object>> {
+        // todo: ObjectId::ALL, etc...
+        assert!(id.0 > 0);
+        if let Some(object) = self.object_types.get(&id.instance_id()) {
+            // doesn't understand that boxed clones can be a subtype
+            #[allow(clippy::map_clone)]
+            object
+                .object
+                .instances
+                .borrow()
+                .values()
+                .map(|instance| -> Rc<dyn Object> { instance.clone() })
+                .collect()
+        } else {
+            self.instance(id).into_iter().collect()
         }
     }
 

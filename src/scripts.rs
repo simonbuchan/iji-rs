@@ -57,10 +57,50 @@ pub fn call(
         | "keyboard_unset_map" => Ok(().into()),
 
         "place_meeting" => {
-            let _x = args[0].to_int();
-            let _y = args[1].to_int();
-            let _id = args[1].to_int();
-            Ok(true.into())
+            let x = args[0].to_int();
+            let y = args[1].to_int();
+            let id = args[2].try_to_object_id()?;
+
+            // todo: `with (all) place_meeting()` etc.
+            let context_instance = {
+                let room = global.room.borrow();
+                let object_instances = room.object_instances.borrow();
+                object_instances[context.instance_id.instance_id()].clone()
+            };
+
+            let context_state = context_instance.state.borrow();
+            let Some(context_sprite) = context_state.sprite_asset else {
+                return Ok(false.into());
+            };
+            let context_bounds = global
+                .assets()
+                .sprites
+                .get(context_sprite)
+                .bounds(ivec2(x, y).as_vec2());
+
+            let object_type = global
+                .object_types
+                .get(&id.instance_id())
+                .ok_or_else(|| gml::eval::Error::InvalidObject(id.into()))?;
+
+            for other_instance in object_type.object.instances.borrow().values() {
+                let other_state = other_instance.state.borrow();
+                let Some(other_sprite) = other_state.sprite_asset else {
+                    continue;
+                };
+
+                let other_bounds = global
+                    .assets()
+                    .sprites
+                    .get(other_sprite)
+                    .bounds(other_state.pos.as_vec2());
+
+                if context_bounds.overlaps(&other_bounds) {
+                    return Ok(true.into());
+                }
+            }
+
+            Ok(false.into())
         }
 
         "place_free" => {
@@ -198,7 +238,6 @@ pub fn call(
                 .unwrap_or(&context.instance_id.into())
                 .as_object_id()
                 .ok_or_else(|| gml::eval::Error::InvalidObject(args[0].clone()))?;
-            println!("instance_destroy({id:?})");
             global.destroy_instance(id);
             Ok(().into())
         }

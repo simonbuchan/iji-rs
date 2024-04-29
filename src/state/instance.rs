@@ -219,7 +219,7 @@ pub struct InstanceAlarm {
 
 impl InstanceAlarm {
     fn set(&self, index: i32, steps: i32) {
-        if steps <= 0 {
+        if steps < 0 {
             self.active.borrow_mut().remove(&index);
         } else {
             self.active.borrow_mut().insert(index, steps);
