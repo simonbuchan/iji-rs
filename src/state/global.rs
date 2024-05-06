@@ -61,7 +61,7 @@ impl Global {
             vars: default(),
             scripts,
             room_order_index: RefCell::new(0),
-            room: RefCell::new(Room::new()),
+            room: RefCell::new(Room::new(default())),
             next_room_index: default(),
             state: default(),
             last_instance_id,
@@ -99,13 +99,19 @@ impl Global {
     }
 
     pub fn goto_room(&self, index: u32) {
-        let def = &self.content.rooms[index];
-        assert_eq!(&*def.creation_code, "");
-        let Ok(mut room) = self.room.try_borrow_mut() else {
-            *self.next_room_index.borrow_mut() = Some(index);
+        *self.next_room_index.borrow_mut() = Some(index);
+    }
+
+    fn cleanup_room_goto(&self) {
+        let Some(index) = self.next_room_index.borrow_mut().take() else {
             return;
         };
-        *room = Room::new();
+
+        let mut room = self.room.try_borrow_mut().expect("room locked in cleanup");
+
+        let def = &self.content.rooms[index];
+        assert_eq!(&*def.creation_code, "");
+        *room = Room::new(index);
         room.load(self, def);
         // drop mut borrow because instance_create() wants to borrow room
         drop(room);
@@ -114,12 +120,22 @@ impl Global {
             object_type.object.instances.borrow_mut().clear();
         }
         for res in &def.instances {
-            assert_eq!(&*res.creation_code, "");
-            self.instance_create(
+            let instance = self.instance_create(
                 ObjectId::new(res.id),
                 ivec2(res.pos.0, res.pos.1),
                 res.object_index,
             );
+            if !res.creation_code.is_empty() {
+                let creation_script = gml::parse(
+                    &format!("room/{index}/{id}", index = index, id = res.id),
+                    &res.creation_code,
+                )
+                .expect("invalid script");
+                let mut ctx = Context::new(self, instance.id, instance.clone());
+                if let Err(error) = ctx.exec_script(&creation_script, &[]) {
+                    eprintln!("{error}");
+                }
+            }
         }
         let room = self.room.borrow();
         room.object_instances.borrow_mut().values =
@@ -151,11 +167,8 @@ impl Global {
     }
 
     pub fn cleanup(&self) {
-        if let Some(next_room_index) = self.next_room_index.take() {
-            self.goto_room(next_room_index);
-        } else {
-            self.room.borrow_mut().cleanup(self);
-        }
+        self.room.borrow().cleanup(self);
+        self.cleanup_room_goto();
     }
 
     pub fn destroy_instance(&self, id: ObjectId) {
@@ -226,12 +239,23 @@ impl Global {
 
 impl gml::eval::Global for Global {
     fn get(&self, name: &str) -> gml::eval::Result<Option<Value>> {
-        if let Some(id) = self.scripts.names.get(name) {
-            Ok(Some(Value::Int((*id).try_into().expect("invalid id"))))
-        } else if let Some(value) = self.consts.get(name) {
-            Ok(Some(value))
-        } else {
-            self.vars.member(name)
+        match name {
+            "room" => Ok(Some(Value::Int(
+                self.room
+                    .borrow()
+                    .index
+                    .try_into()
+                    .expect("invalid room value"),
+            ))),
+            _ => {
+                if let Some(id) = self.scripts.names.get(name) {
+                    Ok(Some(Value::Int((*id).try_into().expect("invalid id"))))
+                } else if let Some(value) = self.consts.get(name) {
+                    Ok(Some(value))
+                } else {
+                    self.vars.member(name)
+                }
+            }
         }
     }
 

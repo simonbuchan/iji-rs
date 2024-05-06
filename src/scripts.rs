@@ -54,7 +54,8 @@ pub fn call(
         | "sound_stop"
         | "sound_stop_all"
         | "keyboard_set_map"
-        | "keyboard_unset_map" => Ok(().into()),
+        | "keyboard_unset_map"
+        | "screen_redraw" => Ok(().into()),
 
         "place_meeting" => {
             let x = args[0].to_int();
@@ -107,6 +108,12 @@ pub fn call(
             let _x = args[0].to_int();
             let _y = args[1].to_int();
             Ok(true.into())
+        }
+
+        "room_goto" => {
+            let index = args[0].to_int().try_into().expect("invalid room index");
+            global.goto_room(index);
+            Ok(().into())
         }
 
         "room_goto_next" => {
@@ -210,6 +217,48 @@ pub fn call(
             let sprite = assets.sprites.get(sprite);
 
             draw_texture(sprite.textures[image_index], x as f32, y as f32, WHITE);
+
+            Ok(().into())
+        }
+        "draw_sprite_stretched_ext" => {
+            let sprite_index = args[0].to_int();
+            let image_index = args[1].to_int();
+            let x = args[2].to_int();
+            let y = args[3].to_int();
+            let w = args[4].to_int();
+            let h = args[5].to_int();
+            let [_, r, g, b] = (args[6].to_int() as u32).to_be_bytes();
+            let alpha = args[7].to_float();
+
+            let mut color = Color::from_rgba(r, g, b, 255);
+            color.a = alpha as f32;
+
+            let image_index = usize::try_from(image_index).ok().unwrap_or_else(|| {
+                context
+                    .instance
+                    .member("image_index")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_int() as usize
+            });
+
+            let sprite = global.loader().get_sprite(sprite_index as u32);
+            let assets = global.assets();
+            let sprite = assets.sprites.get(sprite);
+
+            let pos = ivec2(x, y).as_vec2();
+            let size = ivec2(w, h).as_vec2();
+            draw_texture_ex(
+                sprite.textures[image_index],
+                pos.x,
+                pos.y,
+                color,
+                DrawTextureParams {
+                    dest_size: Some(size),
+                    ..Default::default()
+                },
+            );
 
             Ok(().into())
         }

@@ -16,6 +16,7 @@ use super::{
 
 #[derive(Serialize)]
 pub struct Room {
+    pub index: u32,
     pub view: View,
     #[serde(serialize_with = "serialize_color")]
     pub background_color: Color,
@@ -54,8 +55,9 @@ impl std::fmt::Debug for Room {
 }
 
 impl Room {
-    pub fn new() -> Self {
+    pub fn new(index: u32) -> Self {
         Self {
+            index,
             view: View {
                 offset: default(),
                 size: vec2(screen_width(), screen_height()).as_uvec2(),
@@ -189,9 +191,12 @@ impl Room {
             instance.clone().dispatch(global, event);
         }
         self.cleanup(global);
+        // should also do global.cleanup_room_goto(), but this room is locked :(
     }
 
     pub fn cleanup(&self, global: &Global) {
+        let mut not_found_instances = 0;
+
         for id in self.destroyed_instances.borrow_mut().drain(..) {
             if let Some(instance) = self
                 .object_instances
@@ -204,7 +209,7 @@ impl Room {
                 let object_type = &global.object_types[&instance.object_index];
                 object_type.object.instances.borrow_mut().remove(&id);
             } else {
-                println!("cleanup instance not found: {:?}", id);
+                not_found_instances += 1;
             }
         }
 
@@ -212,6 +217,10 @@ impl Room {
             .borrow_mut()
             .values
             .extend(self.added_instances.borrow_mut().drain());
+
+        if not_found_instances != 0 {
+            println!("instances not found during script cleanup: {not_found_instances}");
+        }
     }
 }
 
