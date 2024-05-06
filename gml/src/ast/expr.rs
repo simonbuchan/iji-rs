@@ -18,14 +18,22 @@ pub enum Expr {
         op: BinaryOp,
         rhs: Box<Expr>,
     },
+    // `lhs.name`
     Member {
         lhs: Box<Expr>,
         name: String,
     },
+    // `lhs[indices]`
     Index {
         lhs: Box<Expr>,
         indices: Vec<Box<Expr>>,
     },
+    // `(id).name`
+    InstanceProperty {
+        id: Box<Expr>,
+        name: String,
+    },
+    // `name(args)`
     Call {
         pos: Pos,
         name: String,
@@ -59,6 +67,9 @@ impl Expr {
                     index.visit(visitor);
                 }
             }
+            Self::InstanceProperty { id, .. } => {
+                id.visit(visitor);
+            }
             Self::Call { args, .. } => {
                 for arg in args {
                     arg.visit(visitor);
@@ -79,6 +90,7 @@ impl Display for Expr {
             Expr::Binary { lhs, op, rhs } => write!(f, "({lhs}) {op} ({rhs})"),
             Expr::Member { lhs, name } => write!(f, "{lhs}.{name}"),
             Expr::Index { lhs, indices } => write!(f, "{lhs}[{}]", CommaSep(&indices)),
+            Expr::InstanceProperty { id, name: member } => write!(f, "({id}).{member}"),
             Expr::Call { pos: _, name, args } => write!(f, "{name}({})", CommaSep(&args)),
         }
     }

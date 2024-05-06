@@ -45,8 +45,8 @@ stmt              = _{ if_stmt
 sep               = _{ ";"? }
 
 assign_expr       = { assign_lhs ~ assign_op ~ expr }
-  assign_lhs      = { (var | assign_id) ~ (member | index)* }
-    assign_id     = { "(" ~ expr ~ ")" }
+  assign_lhs      = { var ~ (member | index)* | assign_id_property }
+    assign_id_property = { "(" ~ expr ~ ")" ~ "." ~ id }
   assign_op       = _{ assign | add_assign | sub_assign | mul_assign | div_assign }
     assign        = { "=" }
     add_assign    = { "+=" }

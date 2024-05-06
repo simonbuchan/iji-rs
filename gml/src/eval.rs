@@ -571,6 +571,7 @@ impl<'a> Context<'a> {
         match place {
             Place::Value(value) => Ok(value.clone()),
             Place::Var(var) => self.var(var),
+            // (id).member
             Place::Property(id, name) => {
                 let object = self.get(*id, name)?;
                 Ok(object.unwrap_or_default())
@@ -807,6 +808,12 @@ impl<'a> Context<'a> {
                     .map(|index| self.eval(index))
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Place::Index(lhs, indices))
+            }
+            // (id).member
+            ast::Expr::InstanceProperty { id, name: member } => {
+                let id = self.eval(id)?;
+                let id = id.try_to_object_id()?;
+                Ok(Place::Property(id, member.clone()))
             }
             ast::Expr::Call {
                 pos,

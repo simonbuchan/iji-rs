@@ -55,9 +55,11 @@ fn dump_tree(indent: usize, pairs: Pairs<'_, Rule>) {
         let start = span.start();
         let end = span.end();
         let (line, col) = pair.line_col();
+        let string;
         let mut str = pair.as_str();
-        if str.len() > 20 {
-            str = &str[..20];
+        if str.len() > 40 {
+            string = format!("{}... ({})", &str[..40], str.len());
+            str = &string;
         }
         println!(
             "{:indent$}{line}:{col}: [{start}-{end}] {rule:?} {str:?}",
@@ -188,9 +190,13 @@ fn parse_assign_lhs(pair: Pair<'_, Rule>) -> Box<Expr> {
     let id = inner.next().unwrap();
     let mut lhs = match id.as_rule() {
         Rule::var => Box::new(Expr::Var(parse_var(id))),
-        Rule::assign_id => {
+        Rule::assign_id_property => {
             let mut inner = id.into_inner();
-            return parse_expr_pair(inner.next().unwrap());
+            let id = inner.next().unwrap();
+            let id = parse_expr_pair(id);
+            let member = inner.next().unwrap();
+            let member = member.as_str().into();
+            return Box::new(Expr::InstanceProperty { id, name: member });
         }
         _ => unreachable!("bad assign lhs: {id:?}"),
     };
