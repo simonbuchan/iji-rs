@@ -1,6 +1,4 @@
-import { lit } from "./libs.mjs";
-
-const { LitElement, css, html } = lit;
+import { LitElement, css, html } from "lit";
 
 // based on https://codepen.io/rpaul/pen/qBWrdOr
 
@@ -23,6 +21,8 @@ class TabSet extends LitElement {
           flex-flow: column;
           min-height: 0;
           min-width: 0;
+          max-height: max-content;
+          flex: 1;
       }
 
       :host([vertical]) {

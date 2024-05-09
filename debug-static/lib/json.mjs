@@ -1,6 +1,4 @@
-import { lit } from "./libs.mjs";
-
-const { LitElement, css, html } = lit;
+import { LitElement, css, html } from "lit";
 
 class Json extends LitElement {
   static styles = css`
@@ -8,27 +6,14 @@ class Json extends LitElement {
       padding: 0;
       margin: 0;
     }
-    
     th, td {
       text-align: start;
       vertical-align: baseline;
     }
-
-    .null {
-      color: coral;
-    }
-
-    .boolean {
-      color: green;
-    }
-
-    .number {
-      color: darkblue;
-    }
-
-    .string {
-      color: brown;
-    }
+    .null { color: coral }
+    .boolean { color: green }
+    .number { color: purple }
+    .string { color: brown }
   `;
 
   static properties = {
@@ -44,10 +29,12 @@ class Json extends LitElement {
       case "boolean":
       case "number":
       case "string":
-        return html`<output class="${typeof this.value}">${this.value}</output>`;
+        return html`
+          <output class="${typeof this.value}">${this.value}</output>`;
       case "object":
         if (this.value === null) {
-          return html`<output class="null">null</output>`;
+          return html`
+            <output class="null">null</output>`;
         }
         if (Array.isArray(this.value)) {
           return html`

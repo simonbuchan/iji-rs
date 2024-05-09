@@ -1,27 +1,33 @@
-import { lit } from "./libs.mjs";
+import { LitElement, css, html } from "lit";
+
 import "./json.mjs";
 import "./tabs.mjs";
-
-const { LitElement, css, html } = lit;
+import "./gml.mjs";
+import "./tab/room.mjs";
 
 /** @property {import("./state").Global} state */
 class AppRoot extends LitElement {
   static styles = css`
-      output {
-          display: block;
-          font-family: monospace;
-          white-space: pre;
-      }
+    :host { flex: 1 }
+    
+    button {
+      font: inherit;
+      align-self: center;
+      padding: 0.5em 1em;
+      border: 1px solid #ccc;
+      background: none;
+      cursor: pointer;
+      
+      &:hover { background: #f1f1f1 }
+    }
 
-      .row {
-          display: flex;
-          flex-flow: row;
-      }
-
-      .col {
-          display: flex;
-          flex-flow: column;
-      }
+    output {
+      display: block;
+      font-family: monospace;
+      white-space: pre;
+    }
+    
+    gml-namespace { flex: 1 }
   `;
 
   static properties = {
@@ -33,7 +39,6 @@ class AppRoot extends LitElement {
 
   constructor() {
     super();
-    this.search = "";
     void this.refresh();
   }
 
@@ -48,37 +53,7 @@ class AppRoot extends LitElement {
           <gml-namespace .value="${this.state.vars}"></gml-namespace>
         </d-tab>
         <d-tab title="room">
-          <d-tab-set vertical>
-            <input
-              slot="tab-bar-before"
-              type="text"
-              placeholder="search"
-              .value="${this.search}"
-              @input="${this.searchInput}"
-            />
-            ${Array.from(
-              Map.groupBy(
-                Object.values(this.state.room.object_instances.values),
-                (instance) => this.state.object_types[instance.object_index]
-              ).entries()
-            )
-              .filter(
-                ([obj]) =>
-                  !this.search ||
-                  obj.name.toLowerCase().includes(this.search.toLowerCase())
-              )
-              .map(([obj, instances]) => {
-                return html`
-                  <d-tab title="${obj.name} (${instances.length})">
-                    <d-tab-set>
-                      ${instances.map((instance) =>
-                        this.renderInstance(instance)
-                      )}
-                    </d-tab-set>
-                  </d-tab>
-                `;
-              })}
-          </d-tab-set>
+          <d-room .state="${this.state}"></d-room>
         </d-tab>
         <d-tab title="raw">
           <d-json .value="${this.state}"></d-json>
@@ -92,127 +67,9 @@ class AppRoot extends LitElement {
     this.state = await res.json();
   }
 
-  searchInput(event) {
-    this.search = event.target.value;
-  }
-
-  renderInstance(instance) {
-    let title = `${instance.id}`;
-    title += `: ${instance.state.pos[0]},${instance.state.pos[1]}`;
-
-    const sprite =
-      instance.state.sprite_asset === null || instance.state.sprite_index < 0
-        ? null
-        : html`
-          <img
-            src="/sprite/${instance.state.sprite_index}/${instance.state
-              .image_index}"
-          />
-        `;
-
-    let velocity = instance.state.velocity;
-    if (velocity.Cartesian) {
-      velocity = `cartesian(${velocity.Cartesian[0]},${velocity.Cartesian[1]})`;
-    } else {
-      velocity = `polar(${velocity.Polar[0]},${velocity.Polar[1]})`;
-    }
-
-    return html`
-      <d-tab title="${title}">
-        <div class="row">
-          ${sprite}
-          <div class="col">
-            <div>Sprite ${instance.state.sprite_index}</div>
-            <div>
-              Image ${instance.state.image_index} / Speed
-              ${instance.state.image_speed}
-            </div>
-            <div>
-              Blend
-              <d-color .value="${instance.state.image_blend_alpha}"></d-color>
-            </div>
-            <div>Depth ${instance.state.depth}</div>
-            <div>Visible ${instance.state.visible}</div>
-            <div>Velocity ${velocity}</div>
-          </div>
-        </div>
-        <gml-namespace .value="${instance.vars}"></gml-namespace>
-      </d-tab>
-    `;
-  }
 }
 
 customElements.define("app-root", AppRoot);
-
-/** @property {import("./state").Namespace} value */
-class GmlNamespace extends LitElement {
-  static properties = {
-    value: {}
-  };
-
-  constructor() {
-    super();
-    this.value = { vars: {} };
-  }
-
-  render() {
-    return html`
-      <table>
-        <thead>
-        <tr>
-          <td>Name</td>
-          <td>Value</td>
-        </tr>
-        </thead>
-        ${Object.entries(this.value.vars).map(([name, value]) => {
-          return html`
-            <tr>
-              <td>${name}</td>
-              <td>
-                <gml-value .value="${value}">
-              </td>
-            </tr>
-          `;
-        })}
-      </table>
-    `;
-  }
-}
-
-customElements.define("gml-namespace", GmlNamespace);
-
-/** @property {import("./state").Value} value */
-class GmlValue extends LitElement {
-  static properties = {
-    value: {}
-  };
-
-  constructor() {
-    super();
-    this.value = "Undefined";
-  }
-
-  render() {
-    if (this.value === "Undefined") {
-      return "Undefined";
-    }
-    if (this.value.Bool !== undefined) {
-      return String(this.value.Bool);
-    }
-    if (this.value.Int !== undefined) {
-      return String(this.value.Int);
-    }
-    if (this.value.Float !== undefined) {
-      return this.value.Float.toFixed(1);
-    }
-    if (this.value.String !== undefined) {
-      return JSON.stringify(this.value.String);
-    }
-    return JSON.stringify(this.value);
-  }
-}
-
-customElements.define("gml-value", GmlValue);
 
 /** @property {import("./state").Color} value */
 class DColor extends LitElement {
